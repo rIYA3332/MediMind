@@ -3,7 +3,7 @@
 
 export const API_CONFIG = {
  
-  BASE_URL: 'http://192.168.68.28:3000', 
+  BASE_URL: 'http://192.168.1.67:3000', 
   PORT: 3000,
 };
 

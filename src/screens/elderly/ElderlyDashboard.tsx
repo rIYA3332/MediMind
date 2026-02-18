@@ -71,40 +71,43 @@ const ElderlyDashboard = ({ route, navigation }: any) => {
     }
   };
 
+// new
   const fetchTodaySummary = async () => {
-    try {
-      // Get today's medications
-      const medRes = await fetch(getApiUrl(`/api/medications/today/${user.id}`));
-      const todayMeds = await medRes.json();
-      const taken = todayMeds.filter((m: any) => m.taken_today > 0).length;
-      
-      // Get today's health logs
-      const healthRes = await fetch(getApiUrl(`/api/health-logs/${user.id}`));
-      const healthLogs = await healthRes.json();
-      const today = new Date().toDateString();
-      const todayHealth = healthLogs.filter((log: any) =>
-        new Date(log.logged_at).toDateString() === today
-      );
-      
-      // Get today's mood
-      const moodRes = await fetch(getApiUrl(`/api/mood/${user.id}`));
-      const moodLogs = await moodRes.json();
-      const todayMood = moodLogs.filter((log: any) =>
-        new Date(log.logged_at).toDateString() === today
-      );
-      
-      setSummary({
-        medications: {
-          taken: taken,
-          total: todayMeds.length
-        },
-        healthLogs: todayHealth.length,
-        moodRecorded: todayMood.length > 0
-      });
-    } catch (e) {
-      console.log("Fetch summary error", e);
-    }
-  };
+  if (!user?.id) return;
+
+  try {
+    const response = await fetch(getApiUrl(`/api/mood/${user.id}`));
+    const moodLogs = await response.json();
+
+    const now = new Date();
+
+    const startOfDay = new Date(
+      now.getFullYear(),
+      now.getMonth(),
+      now.getDate()
+    );
+
+    const endOfDay = new Date(
+      now.getFullYear(),
+      now.getMonth(),
+      now.getDate() + 1
+    );
+
+    const todayMood = moodLogs.filter((log: any) => {
+      const logDate = new Date(log.logged_at);
+      return logDate >= startOfDay && logDate < endOfDay;
+    });
+
+    setSummary(prev => ({
+      ...prev,
+      moodRecorded: todayMood.length > 0
+    }));
+
+  } catch (error) {
+    console.error('Error fetching mood:', error);
+  }
+};
+
 
   const handleAction = async (connectionId: number, status: 'approved' | 'rejected') => {
     try {

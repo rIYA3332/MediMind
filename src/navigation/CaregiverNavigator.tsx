@@ -55,7 +55,7 @@ const CaregiverNavigator: React.FC<Props> = ({ route }) => {
         }}
       />
      
-      /
+      
     </Tab.Navigator>
   );
 };

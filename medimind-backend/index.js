@@ -311,24 +311,64 @@ app.get('/api/health-logs/latest/:userId', (req, res) => {
 
 // --- MOOD TRACKING ---
 
+// --- MOOD TRACKING ---
+
 app.post('/api/mood', (req, res) => {
   const { userId, mood, notes } = req.body;
-  
-  const sql = `INSERT INTO mood_logs (user_id, mood, notes) VALUES (?, ?, ?)`;
-  
-  db.query(sql, [userId, mood, notes], (err, result) => {
-    if (err) return res.status(400).json({ message: 'Failed to log mood' });
-    res.json({ message: 'Mood logged', moodId: result.insertId });
+
+  const sql = `
+    INSERT INTO mood_logs (user_id, mood, notes)
+    VALUES (?, ?, ?)
+  `;
+
+  db.query(sql, [userId, mood, notes || null], (err, result) => {
+    if (err) {
+      console.log('Mood insert error:', err);
+      return res.status(400).json({ message: 'Failed to log mood' });
+    }
+
+    // Find approved caregivers
+    const caregiverSql = `
+      SELECT requester_id
+      FROM connections
+      WHERE elder_id = ? AND status = 'approved'
+    `;
+
+    db.query(caregiverSql, [userId], (err2, caregivers) => {
+      if (err2) {
+        console.log('Caregiver fetch error:', err2);
+        return res.json({ message: 'Mood saved but no alert created' });
+      }
+
+      if (caregivers.length > 0) {
+
+        const alertValues = caregivers.map(c => [
+          userId,                 // user_id (elder)
+          c.requester_id,         // caregiver_id
+          'mood',                 // alert_type
+          `New mood recorded: ${mood}${notes ? ' - ' + notes : ''}`,
+          false                   // is_read
+        ]);
+
+        const alertSql = `
+          INSERT INTO alerts 
+          (user_id, caregiver_id, alert_type, message, is_read)
+          VALUES ?
+        `;
+
+        db.query(alertSql, [alertValues], (err3) => {
+          if (err3) {
+            console.log('Alert insert error:', err3);
+          }
+        });
+      }
+
+      res.json({ message: 'Mood logged successfully' });
+    });
   });
 });
 
-app.get('/api/mood/:userId', (req, res) => {
-  const sql = 'SELECT * FROM mood_logs WHERE user_id = ? ORDER BY logged_at DESC LIMIT 30';
-  db.query(sql, [req.params.userId], (err, results) => {
-    if (err) return res.status(500).json({ message: 'Error fetching mood logs' });
-    res.json(results || []);
-  });
-});
+
 
 // --- ALERTS ---
 
@@ -343,24 +383,52 @@ app.post('/api/alerts', (req, res) => {
   });
 });
 
-app.get('/api/alerts/caregiver/:caregiverId', (req, res) => {
-  const sql = `SELECT a.*, u.name as elder_name FROM alerts a
-               JOIN users u ON a.elder_id = u.id
-               WHERE a.caregiver_id = ? AND a.read_status = false
-               ORDER BY a.created_at DESC`;
-  
-  db.query(sql, [req.params.caregiverId], (err, results) => {
-    if (err) return res.status(500).json({ message: 'Error fetching alerts' });
+// GET mood logs for elder
+app.get('/api/mood/:userId', (req, res) => {
+  const sql = `
+    SELECT * FROM mood_logs
+    WHERE user_id = ?
+    ORDER BY logged_at DESC
+  `;
+
+  db.query(sql, [req.params.userId], (err, results) => {
+    if (err) {
+      console.log(err);
+      return res.status(500).json({ message: 'Error fetching moods' });
+    }
+
     res.json(results || []);
   });
 });
 
+
+app.get('/api/alerts/caregiver/:caregiverId', (req, res) => {
+  const sql = `
+    SELECT a.*, u.name as elder_name
+    FROM alerts a
+    JOIN users u ON a.user_id = u.id
+    WHERE a.caregiver_id = ? AND a.is_read = false
+    ORDER BY a.created_at DESC
+  `;
+
+  db.query(sql, [req.params.caregiverId], (err, results) => {
+    if (err) {
+      console.log('Fetch alerts error:', err);
+      return res.status(500).json({ message: 'Error fetching alerts' });
+    }
+
+    res.json(results || []);
+  });
+});
+
+
 app.put('/api/alerts/:id/read', (req, res) => {
-  db.query('UPDATE alerts SET read_status = true WHERE id = ?', [req.params.id], (err) => {
+  db.query('UPDATE alerts SET is_read = true WHERE id = ?', [req.params.id], (err) => {
     if (err) return res.status(400).json({ message: 'Failed to update alert' });
     res.json({ message: 'Alert marked as read' });
   });
 });
+
 
 // --- WEEKLY REPORTS ---
 

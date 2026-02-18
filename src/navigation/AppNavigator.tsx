@@ -8,6 +8,8 @@ import RegisterScreen from '../screens/common/RegisterScreen';
 import ConnectScreen from '../screens/common/ConnectScreen';
 import ElderlyNavigator from './ElderlyNavigator';
 import CaregiverNavigator from './CaregiverNavigator';
+import DoctorNavigator from './DoctorNavigator';
+
 
 export type RootStackParamList = {
   Login: undefined;
@@ -31,6 +33,8 @@ const AppNavigator: React.FC = () => {
         <Stack.Screen name="ConnectScreen" component={ConnectScreen} />
         <Stack.Screen name="ElderlyApp" component={ElderlyNavigator} />
         <Stack.Screen name="CaregiverApp" component={CaregiverNavigator} />
+        <Stack.Screen name="DoctorApp" component={DoctorNavigator} />
+
       </Stack.Navigator>
     </NavigationContainer>
   );

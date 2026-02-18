@@ -6,15 +6,19 @@ import {
 import { Picker } from '@react-native-picker/picker'; 
 import Input from '../../components/Input';
 import Button from '../../components/Button';
+import Card from '../../components/Card';
 import { colors } from '../../styles/colors';
 import { getApiUrl } from '../../config/api';
+import { useAuth } from '../../context/AuthContext'; // AuthContext we created
 
 const ConnectScreen = ({ route, navigation }: any) => {
-  const { role, userId } = route.params;
-  const [targetInfo, setTargetInfo] = useState(''); // For Email/Phone
-  const [targetCode, setTargetCode] = useState('');
+  const { role, userId } = route.params; // Logged-in caregiver
+  const [targetInfo, setTargetInfo] = useState(''); // Elder's email/phone
+  const [targetCode, setTargetCode] = useState(''); // Elder's registration code
   const [relationship, setRelationship] = useState('Son/Daughter');
   const [loading, setLoading] = useState(false);
+
+  const { setCaregiverId } = useAuth(); // To store caregiver ID globally
 
   const handleRequest = async () => {
     if (!targetCode && !targetInfo) {
@@ -30,23 +34,38 @@ const ConnectScreen = ({ route, navigation }: any) => {
         body: JSON.stringify({ 
           requesterId: userId, 
           targetCode: targetCode.trim().toUpperCase(),
-          relationship: relationship // Added to payload
+          relationship
         }),
       });
 
       const data = await response.json();
+
       if (response.ok) {
-        Alert.alert("Success", data.message, [{ text: "OK", onPress: () => navigation.navigate('Login') }]);
+        // Save caregiverId globally for alerts
+        setCaregiverId(userId.toString());
+
+        Alert.alert(
+          "Success", 
+          data.message, 
+          [{ text: "OK", onPress: () => navigation.navigate('CaregiverApp', { user: { id: userId } }) }]
+        );
       } else {
         Alert.alert("Request Failed", data.message);
       }
-    } catch (e) { Alert.alert("Error", "Connection failed"); }
-    finally { setLoading(false); }
+    } catch (e) { 
+      Alert.alert("Error", "Connection failed");
+      console.log(e);
+    } finally { 
+      setLoading(false); 
+    }
   };
 
   return (
     <SafeAreaView style={styles.safeArea}>
-      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
+      <KeyboardAvoidingView 
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'} 
+        style={{ flex: 1 }}
+      >
         <ScrollView contentContainerStyle={styles.container}>
           <Text style={styles.headerTitle}>Connect with Elder</Text>
           <Text style={styles.subtitle}>Enter elder's details to start monitoring</Text>
@@ -64,7 +83,6 @@ const ConnectScreen = ({ route, navigation }: any) => {
               value={targetCode} 
               onChangeText={setTargetCode} 
               placeholder="- - - - - -" 
-             
               style={styles.codeInput}
             />
             <Text style={styles.hintText}>Ask elder for their unique code</Text>
@@ -82,8 +100,14 @@ const ConnectScreen = ({ route, navigation }: any) => {
               </Picker>
             </View>
 
-            {loading ? <ActivityIndicator color={colors.primary} size="large" /> : (
-              <Button title="SEND CONNECTION REQUEST" onPress={handleRequest} style={styles.submitBtn} />
+            {loading ? (
+              <ActivityIndicator color={colors.primary} size="large" />
+            ) : (
+              <Button 
+                title="SEND CONNECTION REQUEST" 
+                onPress={handleRequest} 
+                style={styles.submitBtn} 
+              />
             )}
 
             <View style={styles.infoBox}>
