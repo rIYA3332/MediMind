@@ -15,6 +15,7 @@ import Button from '../../components/Button';
 import Input from '../../components/Input';
 import { colors } from '../../styles/colors';
 import { RootStackParamList } from '../../navigation/AppNavigator';
+import { getApiUrl } from '../../config/api';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Login'>;
 
@@ -31,8 +32,7 @@ const LoginScreen: React.FC<Props> = ({ navigation }) => {
 
     setLoading(true);
     try {
-      // Ensure this IP matches your computer's local IP address
-      const res = await fetch('http://10.125.81.28:3000/api/auth/login', {
+      const res = await fetch(getApiUrl('/api/auth/login'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
@@ -45,18 +45,28 @@ const LoginScreen: React.FC<Props> = ({ navigation }) => {
 
       if (res.ok) {
         if (data.role === 'elderly') {
-          
-          navigation.navigate('ElderlyApp', { user: data });
-        } else {
-          // Caregiver/Doctor Logic
-          if (data.status === 'pending') {
-            Alert.alert("Pending", "Waiting for Elder approval.");
-          } else if (data.status === 'none') {
-            // If they registered but haven't entered a code yet
-            navigation.navigate('ConnectScreen', { role: data.role, userId: data.id });
+          // Navigate to elderly dashboard
+          navigation.replace('ElderlyApp', { user: data });
+        } else if (data.role === 'caregiver' || data.role === 'doctor') {
+          // Check if caregiver has connections
+          if (data.hasConnection) {
+            // Has approved connections - go to caregiver app
+            navigation.replace('CaregiverApp', { user: data });
           } else {
-            Alert.alert("Success", `Logged in as ${data.name}`);
-            // navigation.navigate('CaregiverApp', { user: data });
+            // No connections - need to connect with elder first
+            Alert.alert(
+              "Connect with Elder", 
+              "You need to connect with an elder first. Enter their connection code.",
+              [
+                {
+                  text: "OK",
+                  onPress: () => navigation.navigate('ConnectScreen', { 
+                    role: data.role, 
+                    userId: data.id 
+                  })
+                }
+              ]
+            );
           }
         }
       } else {
@@ -64,7 +74,7 @@ const LoginScreen: React.FC<Props> = ({ navigation }) => {
       }
     } catch (error) {
       console.error(error);
-      Alert.alert("Connection Error", "Could not connect to server. Check your IP and ensure backend is running.");
+      Alert.alert("Connection Error", "Could not connect to server. Check your network and backend.");
     } finally {
       setLoading(false);
     }
@@ -103,12 +113,15 @@ const LoginScreen: React.FC<Props> = ({ navigation }) => {
               style={styles.inputHeight}
             />
             
-            <TouchableOpacity onPress={() => Alert.alert("Reset Password", "Coming soon")}>
+            <TouchableOpacity onPress={() => Alert.alert("Reset Password", "Feature coming soon")}>
                <Text style={styles.forgotPassword}>Forgot Password?</Text>
             </TouchableOpacity>
 
             {loading ? (
-              <ActivityIndicator size="large" color={colors.primary} />
+              <View style={styles.loadingContainer}>
+                <ActivityIndicator size="large" color={colors.primary} />
+                <Text style={styles.loadingText}>Signing in...</Text>
+              </View>
             ) : (
               <Button title="Login" onPress={handleLogin} style={styles.loginBtn} />
             )}
@@ -132,23 +145,44 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.white },
   keyboardView: { flex: 1 },
   content: { flex: 1, padding: 25, justifyContent: 'center' },
-  logoContainer: { alignItems: 'center', marginBottom: 40 },
+  logoContainer: { alignItems: 'center', marginBottom: 50 },
   logo: {
-    width: 90,
-    height: 90,
+    width: 100,
+    height: 100,
     backgroundColor: colors.primary,
-    borderRadius: 45,
+    borderRadius: 50,
     justifyContent: 'center',
     alignItems: 'center',
-    marginBottom: 15,
+    marginBottom: 20,
+    elevation: 5,
   },
-  logoText: { fontSize: 40, fontWeight: 'bold', color: colors.white },
-  appName: { fontSize: 28, fontWeight: 'bold', color: colors.textPrimary, marginBottom: 5 },
-  tagline: { fontSize: 14, color: colors.textSecondary },
+  logoText: { fontSize: 45, fontWeight: 'bold', color: colors.white },
+  appName: { 
+    fontSize: 32, 
+    fontWeight: 'bold', 
+    color: colors.textPrimary, 
+    marginBottom: 8 
+  },
+  tagline: { fontSize: 15, color: colors.textSecondary },
   form: { width: '100%' },
-  inputHeight: { height: 50, fontSize: 16 }, // Bigger text and height
-  forgotPassword: { textAlign: 'right', color: colors.primary, fontSize: 13, marginBottom: 25, fontWeight: '600' },
-  loginBtn: { height: 55, borderRadius: 12 }, // Bigger button
+  inputHeight: { height: 50, fontSize: 16 },
+  forgotPassword: { 
+    textAlign: 'right', 
+    color: colors.primary, 
+    fontSize: 13, 
+    marginBottom: 25, 
+    fontWeight: '600' 
+  },
+  loadingContainer: {
+    alignItems: 'center',
+    paddingVertical: 20,
+  },
+  loadingText: {
+    marginTop: 10,
+    color: colors.textSecondary,
+    fontSize: 14,
+  },
+  loginBtn: { height: 55, borderRadius: 12 },
   signupContainer: { 
     flexDirection: 'row', 
     justifyContent: 'center', 

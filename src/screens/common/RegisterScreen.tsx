@@ -5,6 +5,7 @@ import { RootStackParamList } from '../../navigation/AppNavigator';
 import Button from '../../components/Button';
 import Input from '../../components/Input';
 import { colors } from '../../styles/colors';
+import { getApiUrl } from '../../config/api';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Register'>;
 
@@ -24,7 +25,7 @@ const RegisterScreen: React.FC<Props> = ({ route, navigation }) => {
 
     setLoading(true);
     try {
-      const response = await fetch('http://10.125.81.28:3000/api/auth/register', {
+      const response = await fetch(getApiUrl('/api/auth/register'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...form, role, gender }),
@@ -74,7 +75,7 @@ const RegisterScreen: React.FC<Props> = ({ route, navigation }) => {
 
         <Input label="Phone Number" value={form.phone} onChangeText={(t) => setForm({...form, phone: t})} keyboardType="phone-pad" style={styles.bigInput} />
         
-        {/* CONDITIONAL: ONLY SHOW FOR ELDERLY */}
+        {/*  */}
         {role === 'elderly' && (
           <Input 
             label="Emergency Contact" 

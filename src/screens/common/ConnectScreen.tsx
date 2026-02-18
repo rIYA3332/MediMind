@@ -7,6 +7,7 @@ import { Picker } from '@react-native-picker/picker';
 import Input from '../../components/Input';
 import Button from '../../components/Button';
 import { colors } from '../../styles/colors';
+import { getApiUrl } from '../../config/api';
 
 const ConnectScreen = ({ route, navigation }: any) => {
   const { role, userId } = route.params;
@@ -23,7 +24,7 @@ const ConnectScreen = ({ route, navigation }: any) => {
 
     setLoading(true);
     try {
-      const response = await fetch('http://10.125.81.28:3000/api/auth/connect', {
+      const response = await fetch(getApiUrl('/api/auth/connect'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
