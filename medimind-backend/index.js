@@ -316,10 +316,7 @@ app.get('/api/health-logs/latest/:userId', (req, res) => {
 app.post('/api/mood', (req, res) => {
   const { userId, mood, notes } = req.body;
 
-  const sql = `
-    INSERT INTO mood_logs (user_id, mood, notes)
-    VALUES (?, ?, ?)
-  `;
+  const sql = `INSERT INTO mood_logs (user_id, mood, notes) VALUES (?, ?, ?)`;
 
   db.query(sql, [userId, mood, notes || null], (err, result) => {
     if (err) {
@@ -341,18 +338,18 @@ app.post('/api/mood', (req, res) => {
       }
 
       if (caregivers.length > 0) {
-
         const alertValues = caregivers.map(c => [
-          userId,                 // user_id (elder)
-          c.requester_id,         // caregiver_id
-          'mood',                 // alert_type
+          userId, // elder
+          c.requester_id, // caregiver
+          'mood', // alert_type
           `New mood recorded: ${mood}${notes ? ' - ' + notes : ''}`,
-          false                   // is_read
+          false, // is_read
+          new Date() // created_at timestamp
         ]);
 
         const alertSql = `
           INSERT INTO alerts 
-          (user_id, caregiver_id, alert_type, message, is_read)
+          (user_id, caregiver_id, alert_type, message, is_read, created_at)
           VALUES ?
         `;
 
@@ -367,6 +364,7 @@ app.post('/api/mood', (req, res) => {
     });
   });
 });
+
 
 
 
