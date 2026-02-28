@@ -76,13 +76,11 @@ app.post('/api/auth/login', (req, res) => {
     
     console.log('Password matched for:', email);
 
-    // For caregivers, check if they have approved connections
     if (user.role === 'caregiver' || user.role === 'doctor') {
       const connSql = `SELECT COUNT(*) as count FROM connections WHERE requester_id = ? AND status = 'approved'`;
       db.query(connSql, [user.id], (connErr, connResults) => {
         if (connErr) {
           console.error('Connection check error:', connErr);
-          // Don't fail login, just assume no connections
           return res.json({ 
             id: user.id, 
             role: user.role, 
@@ -182,7 +180,7 @@ app.get('/api/connections/:caregiverId', (req, res) => {
   });
 });
 
-// --- MEDICATIONS (Caregivers add for elders) ---
+// --- MEDICATIONS ---
 
 app.post('/api/medications', (req, res) => {
   const { elderId, name, dosage, frequency, time, days, timing, notification, addedBy } = req.body;
@@ -271,19 +269,156 @@ app.get('/api/medications/today/:userId', (req, res) => {
   });
 });
 
-// --- HEALTH LOGS ---
+// --- HEALTH LOGS WITH ALERTS ---
 
+// Function to check for health risks
+function checkHealthRisks(userId, logType, value, unit) {
+  const riskCheckSql = `
+    SELECT value, logged_at 
+    FROM health_logs 
+    WHERE user_id = ? AND log_type = ? 
+    AND logged_at >= DATE_SUB(NOW(), INTERVAL 3 DAY)
+    ORDER BY logged_at DESC 
+    LIMIT 5
+  `;
+  
+  db.query(riskCheckSql, [userId, logType], (err, logs) => {
+    if (err || logs.length < 3) return;
+    
+    let riskDetected = false;
+    let riskMessage = '';
+    
+    if (logType === 'blood_pressure') {
+      const bpReadings = logs.map(log => {
+        const parts = log.value.split('/');
+        if (parts.length !== 2) return null;
+        const systolic = parseInt(parts[0]);
+        const diastolic = parseInt(parts[1]);
+        if (isNaN(systolic) || isNaN(diastolic)) return null;
+        return { systolic, diastolic, date: log.logged_at };
+      }).filter(bp => bp !== null);
+      
+      if (bpReadings.length < 3) return;
+      
+      const lowBPCount = bpReadings.filter(bp => bp.systolic < 90 || bp.diastolic < 60).length;
+      const highBPCount = bpReadings.filter(bp => bp.systolic > 140 || bp.diastolic > 90).length;
+      
+      if (lowBPCount >= 3) {
+        riskDetected = true;
+        riskMessage = `⚠️ LOW BLOOD PRESSURE ALERT: ${lowBPCount} low readings in the last 3 days. Current: ${value} ${unit}`;
+      } else if (highBPCount >= 3) {
+        riskDetected = true;
+        riskMessage = `⚠️ HIGH BLOOD PRESSURE ALERT: ${highBPCount} high readings in the last 3 days. Current: ${value} ${unit}`;
+      }
+    } else if (logType === 'blood_sugar') {
+      const readings = logs.map(log => parseFloat(log.value)).filter(r => !isNaN(r));
+      if (readings.length < 3) return;
+      
+      const lowCount = readings.filter(r => r < 70).length;
+      const highCount = readings.filter(r => r > 180).length;
+      
+      if (lowCount >= 3) {
+        riskDetected = true;
+        riskMessage = `⚠️ LOW BLOOD SUGAR ALERT: ${lowCount} low readings in the last 3 days. Current: ${value} ${unit}`;
+      } else if (highCount >= 3) {
+        riskDetected = true;
+        riskMessage = `⚠️ HIGH BLOOD SUGAR ALERT: ${highCount} high readings in the last 3 days. Current: ${value} ${unit}`;
+      }
+    } else if (logType === 'heart_rate') {
+      const readings = logs.map(log => parseFloat(log.value)).filter(r => !isNaN(r));
+      if (readings.length < 3) return;
+      
+      const lowCount = readings.filter(r => r < 60).length;
+      const highCount = readings.filter(r => r > 100).length;
+      
+      if (lowCount >= 3) {
+        riskDetected = true;
+        riskMessage = `⚠️ LOW HEART RATE ALERT: ${lowCount} low readings in the last 3 days. Current: ${value} ${unit}`;
+      } else if (highCount >= 3) {
+        riskDetected = true;
+        riskMessage = `⚠️ HIGH HEART RATE ALERT: ${highCount} high readings in the last 3 days. Current: ${value} ${unit}`;
+      }
+    }
+    
+    if (riskDetected) {
+      const caregiverSql = `SELECT requester_id FROM connections WHERE elder_id = ? AND status = 'approved'`;
+      
+      db.query(caregiverSql, [userId], (err2, caregivers) => {
+        if (err2 || caregivers.length === 0) return;
+        
+        const alertValues = caregivers.map(c => [
+          userId,
+          c.requester_id,
+          'vital',
+          riskMessage,
+          false,
+          new Date()
+        ]);
+        
+        const alertSql = `INSERT INTO alerts (user_id, caregiver_id, alert_type, message, is_read, created_at) VALUES ?`;
+        db.query(alertSql, [alertValues], (err3) => {
+          if (err3) console.log('Alert insert error:', err3);
+        });
+      });
+    }
+  });
+}
+
+// Function to notify caregivers about new health logs
+function notifyCaregiversHealthLog(userId, logType, value, unit, notes) {
+  const caregiverSql = `SELECT requester_id FROM connections WHERE elder_id = ? AND status = 'approved'`;
+  
+  db.query(caregiverSql, [userId], (err, caregivers) => {
+    if (err || caregivers.length === 0) return;
+    
+    const logTypeLabel = logType.replace(/_/g, ' ').toUpperCase();
+    const message = `New health log: ${logTypeLabel} - ${value} ${unit}${notes ? ` (${notes})` : ''}`;
+    
+    const alertValues = caregivers.map(c => [
+      userId,
+      c.requester_id,
+      'health_log',
+      message,
+      false,
+      new Date()
+    ]);
+    
+    const alertSql = `INSERT INTO alerts (user_id, caregiver_id, alert_type, message, is_read, created_at) VALUES ?`;
+    db.query(alertSql, [alertValues], (err2) => {
+      if (err2) console.log('Health log alert error:', err2);
+    });
+  });
+}
+
+// POST health log
 app.post('/api/health-logs', (req, res) => {
   const { userId, logType, value, unit, notes } = req.body;
   
+  console.log('Received health log request:', { userId, logType, value, unit, notes });
+  
+  if (!userId || !logType || !value || !unit) {
+    return res.status(400).json({ message: 'Missing required fields' });
+  }
+  
   const sql = `INSERT INTO health_logs (user_id, log_type, value, unit, notes) VALUES (?, ?, ?, ?, ?)`;
   
-  db.query(sql, [userId, logType, value, unit, notes], (err, result) => {
-    if (err) return res.status(400).json({ message: 'Failed to log health data' });
+  db.query(sql, [userId, logType, value, unit, notes || null], (err, result) => {
+    if (err) {
+      console.log('Health log insert error:', err);
+      return res.status(400).json({ message: 'Failed to log health data: ' + err.message });
+    }
+    
+    console.log('Health log inserted successfully:', result.insertId);
+    
+    // Check for risks and notify caregivers
+    checkHealthRisks(userId, logType, value, unit);
+    notifyCaregiversHealthLog(userId, logType, value, unit, notes);
+    
     res.json({ message: 'Health data logged', logId: result.insertId });
   });
 });
 
+// GET health logs
 app.get('/api/health-logs/:userId', (req, res) => {
   const sql = 'SELECT * FROM health_logs WHERE user_id = ? ORDER BY logged_at DESC LIMIT 50';
   db.query(sql, [req.params.userId], (err, results) => {
@@ -292,6 +427,7 @@ app.get('/api/health-logs/:userId', (req, res) => {
   });
 });
 
+// GET latest health readings
 app.get('/api/health-logs/latest/:userId', (req, res) => {
   const sql = `SELECT log_type, value, unit, logged_at 
                FROM health_logs h1
@@ -309,7 +445,52 @@ app.get('/api/health-logs/latest/:userId', (req, res) => {
   });
 });
 
-// --- MOOD TRACKING ---
+// GET health summary
+app.get('/api/health-summary/:userId', (req, res) => {
+  const userId = req.params.userId;
+  
+  const sql = `
+    SELECT 
+      log_type,
+      COUNT(*) as total_logs,
+      MAX(logged_at) as last_logged,
+      AVG(CASE 
+        WHEN log_type = 'blood_sugar' THEN CAST(value AS DECIMAL(10,2))
+        WHEN log_type = 'heart_rate' THEN CAST(value AS DECIMAL(10,2))
+        WHEN log_type = 'weight' THEN CAST(value AS DECIMAL(10,2))
+        WHEN log_type = 'temperature' THEN CAST(value AS DECIMAL(10,2))
+        ELSE NULL 
+      END) as avg_value
+    FROM health_logs 
+    WHERE user_id = ? 
+    AND logged_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)
+    GROUP BY log_type
+  `;
+  
+  db.query(sql, [userId], (err, results) => {
+    if (err) return res.status(500).json({ message: 'Error fetching health summary' });
+    res.json(results || []);
+  });
+});
+
+// GET health trends
+app.get('/api/health-trends/:userId/:logType', (req, res) => {
+  const { userId, logType } = req.params;
+  const days = req.query.days || 7;
+  
+  const sql = `
+    SELECT value, unit, logged_at 
+    FROM health_logs 
+    WHERE user_id = ? AND log_type = ?
+    AND logged_at >= DATE_SUB(NOW(), INTERVAL ? DAY)
+    ORDER BY logged_at ASC
+  `;
+  
+  db.query(sql, [userId, logType, days], (err, results) => {
+    if (err) return res.status(500).json({ message: 'Error fetching trends' });
+    res.json(results || []);
+  });
+});
 
 // --- MOOD TRACKING ---
 
@@ -324,12 +505,7 @@ app.post('/api/mood', (req, res) => {
       return res.status(400).json({ message: 'Failed to log mood' });
     }
 
-    // Find approved caregivers
-    const caregiverSql = `
-      SELECT requester_id
-      FROM connections
-      WHERE elder_id = ? AND status = 'approved'
-    `;
+    const caregiverSql = `SELECT requester_id FROM connections WHERE elder_id = ? AND status = 'approved'`;
 
     db.query(caregiverSql, [userId], (err2, caregivers) => {
       if (err2) {
@@ -339,24 +515,18 @@ app.post('/api/mood', (req, res) => {
 
       if (caregivers.length > 0) {
         const alertValues = caregivers.map(c => [
-          userId, // elder
-          c.requester_id, // caregiver
-          'mood', // alert_type
+          userId,
+          c.requester_id,
+          'mood',
           `New mood recorded: ${mood}${notes ? ' - ' + notes : ''}`,
-          false, // is_read
-          new Date() // created_at timestamp
+          false,
+          new Date()
         ]);
 
-        const alertSql = `
-          INSERT INTO alerts 
-          (user_id, caregiver_id, alert_type, message, is_read, created_at)
-          VALUES ?
-        `;
+        const alertSql = `INSERT INTO alerts (user_id, caregiver_id, alert_type, message, is_read, created_at) VALUES ?`;
 
         db.query(alertSql, [alertValues], (err3) => {
-          if (err3) {
-            console.log('Alert insert error:', err3);
-          }
+          if (err3) console.log('Alert insert error:', err3);
         });
       }
 
@@ -365,8 +535,17 @@ app.post('/api/mood', (req, res) => {
   });
 });
 
+app.get('/api/mood/:userId', (req, res) => {
+  const sql = `SELECT * FROM mood_logs WHERE user_id = ? ORDER BY logged_at DESC`;
 
-
+  db.query(sql, [req.params.userId], (err, results) => {
+    if (err) {
+      console.log(err);
+      return res.status(500).json({ message: 'Error fetching moods' });
+    }
+    res.json(results || []);
+  });
+});
 
 // --- ALERTS ---
 
@@ -380,25 +559,6 @@ app.post('/api/alerts', (req, res) => {
     res.json({ message: 'Alert created', alertId: result.insertId });
   });
 });
-
-// GET mood logs for elder
-app.get('/api/mood/:userId', (req, res) => {
-  const sql = `
-    SELECT * FROM mood_logs
-    WHERE user_id = ?
-    ORDER BY logged_at DESC
-  `;
-
-  db.query(sql, [req.params.userId], (err, results) => {
-    if (err) {
-      console.log(err);
-      return res.status(500).json({ message: 'Error fetching moods' });
-    }
-
-    res.json(results || []);
-  });
-});
-
 
 app.get('/api/alerts/caregiver/:caregiverId', (req, res) => {
   const sql = `
@@ -414,11 +574,9 @@ app.get('/api/alerts/caregiver/:caregiverId', (req, res) => {
       console.log('Fetch alerts error:', err);
       return res.status(500).json({ message: 'Error fetching alerts' });
     }
-
     res.json(results || []);
   });
 });
-
 
 app.put('/api/alerts/:id/read', (req, res) => {
   db.query('UPDATE alerts SET is_read = true WHERE id = ?', [req.params.id], (err) => {
@@ -426,7 +584,6 @@ app.put('/api/alerts/:id/read', (req, res) => {
     res.json({ message: 'Alert marked as read' });
   });
 });
-
 
 // --- WEEKLY REPORTS ---
 
@@ -439,12 +596,30 @@ app.get('/api/reports/weekly/:userId', (req, res) => {
     FROM medication_logs
     WHERE user_id = ? AND taken_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)`;
   
-  const healthSql = `SELECT COUNT(*) as count FROM health_logs 
-                     WHERE user_id = ? AND logged_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)`;
+  const healthSql = `
+    SELECT 
+      log_type,
+      COUNT(*) as count,
+      AVG(CASE 
+        WHEN log_type = 'blood_sugar' THEN CAST(value AS DECIMAL(10,2))
+        WHEN log_type = 'heart_rate' THEN CAST(value AS DECIMAL(10,2))
+        WHEN log_type = 'weight' THEN CAST(value AS DECIMAL(10,2))
+        WHEN log_type = 'temperature' THEN CAST(value AS DECIMAL(10,2))
+        ELSE NULL 
+      END) as avg_value,
+      MAX(value) as max_value,
+      MIN(value) as min_value
+    FROM health_logs 
+    WHERE user_id = ? AND logged_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)
+    GROUP BY log_type
+  `;
   
   const moodSql = `SELECT mood, COUNT(*) as count FROM mood_logs 
                    WHERE user_id = ? AND logged_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)
                    GROUP BY mood`;
+  
+  const alertsSql = `SELECT COUNT(*) as alert_count FROM alerts 
+                     WHERE user_id = ? AND created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)`;
   
   db.query(medSql, [userId], (err, medResults) => {
     if (err) return res.status(500).json({ message: 'Error generating report' });
@@ -455,10 +630,15 @@ app.get('/api/reports/weekly/:userId', (req, res) => {
       db.query(moodSql, [userId], (err, moodResults) => {
         if (err) return res.status(500).json({ message: 'Error generating report' });
         
-        res.json({
-          medications: medResults[0],
-          healthLogs: healthResults[0],
-          mood: moodResults || []
+        db.query(alertsSql, [userId], (err, alertResults) => {
+          if (err) return res.status(500).json({ message: 'Error generating report' });
+          
+          res.json({
+            medications: medResults[0] || { total: 0, taken: 0 },
+            healthLogs: healthResults || [],
+            mood: moodResults || [],
+            alerts: alertResults[0] || { alert_count: 0 }
+          });
         });
       });
     });
@@ -467,5 +647,5 @@ app.get('/api/reports/weekly/:userId', (req, res) => {
 
 const PORT = 3000;
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Server running on http://192.168.1.67:${PORT}`);
+  console.log(`Server running on http://192.168.1.68:${PORT}`);
 });

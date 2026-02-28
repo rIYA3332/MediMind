@@ -94,34 +94,37 @@ const AlertsScreen: React.FC = () => {
   };
 
   const getAlertIcon = (type?: string) => {
-    switch (type) {
-      case 'medication': return '💊';
-      case 'vital': return '⚠️';
-      case 'emergency': return '🚨';
-      case 'mood': return '😊';
-      default: return '🔔';
-    }
-  };
+  switch (type) {
+    case 'medication': return '💊';
+    case 'vital': return '⚠️';
+    case 'emergency': return '🚨';
+    case 'mood': return '😊';
+    case 'health_log': return '📊';
+    default: return '🔔';
+  }
+};
 
-  const getBorderColor = (type?: string) => {
-    switch (type) {
-      case 'emergency': return '#ff7675';
-      case 'vital': return '#fdcb6e';
-      case 'medication': return '#74b9ff';
-      case 'mood': return '#a29bfe';
-      default: return colors.textSecondary;
-    }
-  };
+const getBorderColor = (type?: string) => {
+  switch (type) {
+    case 'emergency': return '#ff7675';
+    case 'vital': return '#fdcb6e';
+    case 'medication': return '#74b9ff';
+    case 'mood': return '#a29bfe';
+    case 'health_log': return '#00b894';
+    default: return colors.textSecondary;
+  }
+};
 
-  const getAlertTypeLabel = (type?: string) => {
-    switch (type) {
-      case 'medication': return 'Medication';
-      case 'vital': return 'Vital Signs';
-      case 'emergency': return 'Emergency';
-      case 'mood': return 'Mood Update';
-      default: return 'Notification';
-    }
-  };
+const getAlertTypeLabel = (type?: string) => {
+  switch (type) {
+    case 'medication': return 'Medication';
+    case 'vital': return 'Vital Signs Alert';
+    case 'emergency': return 'Emergency';
+    case 'mood': return 'Mood Update';
+    case 'health_log': return 'Health Log';
+    default: return 'Notification';
+  }
+};
 
   const formatTimeAgo = (dateString: string) => {
     const date = new Date(dateString);

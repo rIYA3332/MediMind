@@ -72,39 +72,38 @@ const ElderlyDashboard = ({ route, navigation }: any) => {
   };
 
 // new
-  const fetchTodaySummary = async () => {
+const fetchTodaySummary = async () => {
   if (!user?.id) return;
 
+  // Define dates HERE, outside both try/catch blocks
+  const now = new Date();
+  const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const endOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+
+  // Fetch mood
   try {
     const response = await fetch(getApiUrl(`/api/mood/${user.id}`));
     const moodLogs = await response.json();
-
-    const now = new Date();
-
-    const startOfDay = new Date(
-      now.getFullYear(),
-      now.getMonth(),
-      now.getDate()
-    );
-
-    const endOfDay = new Date(
-      now.getFullYear(),
-      now.getMonth(),
-      now.getDate() + 1
-    );
-
     const todayMood = moodLogs.filter((log: any) => {
       const logDate = new Date(log.logged_at);
       return logDate >= startOfDay && logDate < endOfDay;
     });
-
-    setSummary(prev => ({
-      ...prev,
-      moodRecorded: todayMood.length > 0
-    }));
-
+    setSummary(prev => ({ ...prev, moodRecorded: todayMood.length > 0 }));
   } catch (error) {
     console.error('Error fetching mood:', error);
+  }
+
+  // Fetch health logs
+  try {
+    const response = await fetch(getApiUrl(`/api/health-logs/${user.id}`));
+    const healthLogs = await response.json();
+    const todayHealthLogs = healthLogs.filter((log: any) => {
+      const logDate = new Date(log.logged_at);
+      return logDate >= startOfDay && logDate < endOfDay;
+    });
+    setSummary(prev => ({ ...prev, healthLogs: todayHealthLogs.length }));
+  } catch (error) {
+    console.error('Error fetching health logs:', error);
   }
 };
 
