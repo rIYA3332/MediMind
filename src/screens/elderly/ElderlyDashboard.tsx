@@ -13,7 +13,7 @@ const ElderlyDashboard = ({ route, navigation }: any) => {
   const [summary, setSummary] = useState({
     medications: { taken: 0, total: 0 },
     healthLogs: 0,
-    moodRecorded: false
+    moodRecorded: false,
   });
   const [refreshing, setRefreshing] = useState(false);
 
@@ -44,7 +44,7 @@ const ElderlyDashboard = ({ route, navigation }: any) => {
       const data = await res.json();
       setRequests(data);
     } catch (e) {
-      console.log("Fetch error", e);
+      console.log('Fetch error', e);
     }
   };
 
@@ -52,61 +52,55 @@ const ElderlyDashboard = ({ route, navigation }: any) => {
     try {
       const res = await fetch(getApiUrl(`/api/medications/today/${user.id}`));
       const medications = await res.json();
-      
       if (medications.length > 0) {
         const now = new Date();
         const currentTime = now.getHours() * 60 + now.getMinutes();
-        
-        // Find next medication that hasn't been taken today
         const upcoming = medications.find((med: any) => {
           const [hours, minutes] = med.time.split(':');
           const medTime = parseInt(hours) * 60 + parseInt(minutes);
           return medTime >= currentTime && !med.taken_today;
         });
-        
         setNextMed(upcoming || null);
       }
     } catch (e) {
-      console.log("Fetch medications error", e);
+      console.log('Fetch medications error', e);
     }
   };
 
-// new
-const fetchTodaySummary = async () => {
-  if (!user?.id) return;
+  const fetchTodaySummary = async () => {
+    if (!user?.id) return;
 
-  // Define dates HERE, outside both try/catch blocks
-  const now = new Date();
-  const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const endOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+    // Defined OUTSIDE both try/catch so both blocks can use them
+    const now = new Date();
+    const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const endOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
 
-  // Fetch mood
-  try {
-    const response = await fetch(getApiUrl(`/api/mood/${user.id}`));
-    const moodLogs = await response.json();
-    const todayMood = moodLogs.filter((log: any) => {
-      const logDate = new Date(log.logged_at);
-      return logDate >= startOfDay && logDate < endOfDay;
-    });
-    setSummary(prev => ({ ...prev, moodRecorded: todayMood.length > 0 }));
-  } catch (error) {
-    console.error('Error fetching mood:', error);
-  }
+    // Fetch mood
+    try {
+      const response = await fetch(getApiUrl(`/api/mood/${user.id}`));
+      const moodLogs = await response.json();
+      const todayMood = moodLogs.filter((log: any) => {
+        const logDate = new Date(log.logged_at);
+        return logDate >= startOfDay && logDate < endOfDay;
+      });
+      setSummary(prev => ({ ...prev, moodRecorded: todayMood.length > 0 }));
+    } catch (error) {
+      console.error('Error fetching mood:', error);
+    }
 
-  // Fetch health logs
-  try {
-    const response = await fetch(getApiUrl(`/api/health-logs/${user.id}`));
-    const healthLogs = await response.json();
-    const todayHealthLogs = healthLogs.filter((log: any) => {
-      const logDate = new Date(log.logged_at);
-      return logDate >= startOfDay && logDate < endOfDay;
-    });
-    setSummary(prev => ({ ...prev, healthLogs: todayHealthLogs.length }));
-  } catch (error) {
-    console.error('Error fetching health logs:', error);
-  }
-};
-
+    // Fetch health logs
+    try {
+      const response = await fetch(getApiUrl(`/api/health-logs/${user.id}`));
+      const healthLogs = await response.json();
+      const todayHealthLogs = healthLogs.filter((log: any) => {
+        const logDate = new Date(log.logged_at);
+        return logDate >= startOfDay && logDate < endOfDay;
+      });
+      setSummary(prev => ({ ...prev, healthLogs: todayHealthLogs.length }));
+    } catch (error) {
+      console.error('Error fetching health logs:', error);
+    }
+  };
 
   const handleAction = async (connectionId: number, status: 'approved' | 'rejected') => {
     try {
@@ -116,13 +110,12 @@ const fetchTodaySummary = async () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ connectionId }),
       });
-      
       if (res.ok) {
-        Alert.alert("Success", `Request ${status}`);
+        Alert.alert('Success', `Request ${status}`);
         fetchRequests();
       }
     } catch (e) {
-      Alert.alert("Error", "Action failed");
+      Alert.alert('Error', 'Action failed');
     }
   };
 
@@ -131,32 +124,32 @@ const fetchTodaySummary = async () => {
     const [hours, minutes] = time.split(':');
     const medTime = new Date();
     medTime.setHours(parseInt(hours), parseInt(minutes), 0);
-    
     const diff = medTime.getTime() - now.getTime();
     const minutesLeft = Math.floor(diff / 60000);
-    
     if (minutesLeft < 0) return 'Now';
     if (minutesLeft < 30) return `in ${minutesLeft} min`;
     return `at ${time}`;
   };
 
+  const getGreeting = () => {
+    const hour = new Date().getHours();
+    if (hour < 12) return 'Good Morning';
+    if (hour < 17) return 'Good Afternoon';
+    return 'Good Evening';
+  };
+
   return (
     <SafeAreaView style={styles.container}>
-      <ScrollView 
-        refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
-        }
+      <ScrollView
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
       >
         {/* Header */}
         <View style={styles.header}>
           <View>
-            <Text style={styles.greeting}>Good Morning</Text>
+            <Text style={styles.greeting}>{getGreeting()}</Text>
             <Text style={styles.userName}>{user.name}</Text>
           </View>
-          <TouchableOpacity 
-            onPress={() => navigation.replace('Login')} 
-            style={styles.menuButton}
-          >
+          <TouchableOpacity onPress={() => navigation.replace('Login')} style={styles.menuButton}>
             <Text style={styles.menuText}>☰</Text>
           </TouchableOpacity>
         </View>
@@ -177,43 +170,20 @@ const fetchTodaySummary = async () => {
         {/* Quick Actions */}
         <Text style={styles.sectionTitle}>Quick Actions</Text>
         <View style={styles.quickActions}>
-          <TouchableOpacity 
-            style={styles.actionCard}
-            onPress={() => navigation.navigate('Health')}
-          >
-            <View style={styles.actionIconContainer}>
-              <Text style={styles.actionIcon}>📊</Text>
-            </View>
+          <TouchableOpacity style={styles.actionCard} onPress={() => navigation.navigate('Health')}>
+            <View style={styles.actionIconContainer}><Text style={styles.actionIcon}>📊</Text></View>
             <Text style={styles.actionText}>Log Health Data</Text>
           </TouchableOpacity>
-
-          <TouchableOpacity 
-            style={styles.actionCard}
-            onPress={() => navigation.navigate('MoodCheck')}
-          >
-            <View style={styles.actionIconContainer}>
-              <Text style={styles.actionIcon}>😊</Text>
-            </View>
+          <TouchableOpacity style={styles.actionCard} onPress={() => navigation.navigate('MoodCheck')}>
+            <View style={styles.actionIconContainer}><Text style={styles.actionIcon}>😊</Text></View>
             <Text style={styles.actionText}>Mood Check-in</Text>
           </TouchableOpacity>
-
-          <TouchableOpacity 
-            style={styles.actionCard}
-            onPress={() => navigation.navigate('Meds')}
-          >
-            <View style={styles.actionIconContainer}>
-              <Text style={styles.actionIcon}>💊</Text>
-            </View>
+          <TouchableOpacity style={styles.actionCard} onPress={() => navigation.navigate('Meds')}>
+            <View style={styles.actionIconContainer}><Text style={styles.actionIcon}>💊</Text></View>
             <Text style={styles.actionText}>View Medications</Text>
           </TouchableOpacity>
-
-          <TouchableOpacity 
-            style={styles.actionCard}
-            onPress={() => Alert.alert('Recommendations', 'Feature coming soon!')}
-          >
-            <View style={styles.actionIconContainer}>
-              <Text style={styles.actionIcon}>💡</Text>
-            </View>
+          <TouchableOpacity style={styles.actionCard} onPress={() => Alert.alert('Recommendations', 'Feature coming soon!')}>
+            <View style={styles.actionIconContainer}><Text style={styles.actionIcon}>💡</Text></View>
             <Text style={styles.actionText}>Recommendations</Text>
           </TouchableOpacity>
         </View>
@@ -238,13 +208,13 @@ const fetchTodaySummary = async () => {
                 ? 'On Track' : 'Pending'}
             </Text>
           </View>
-          
+
           <View style={styles.summaryRow}>
             <Text style={styles.summaryIcon}>📊</Text>
             <View style={styles.summaryInfo}>
               <Text style={styles.summaryLabel}>Health Logs</Text>
               <Text style={styles.summaryValue}>
-                {summary.healthLogs} {summary.healthLogs === 1 ? 'entry' : 'entries'}
+                {summary.healthLogs} {summary.healthLogs === 1 ? 'entry' : 'entries'} today
               </Text>
             </View>
             <Text style={[
@@ -254,13 +224,13 @@ const fetchTodaySummary = async () => {
               {summary.healthLogs > 0 ? 'Active' : 'None'}
             </Text>
           </View>
-          
-          <View style={styles.summaryRow}>
+
+          <View style={[styles.summaryRow, { borderBottomWidth: 0 }]}>
             <Text style={styles.summaryIcon}>😊</Text>
             <View style={styles.summaryInfo}>
               <Text style={styles.summaryLabel}>Mood</Text>
               <Text style={styles.summaryValue}>
-                {summary.moodRecorded ? 'Recorded' : 'Not recorded'}
+                {summary.moodRecorded ? 'Recorded today' : 'Not recorded'}
               </Text>
             </View>
             <Text style={[
@@ -285,19 +255,11 @@ const fetchTodaySummary = async () => {
                 <Text style={styles.reqRelation}>
                   {req.relationship || 'Family member'} wants to monitor your health
                 </Text>
-                
                 <View style={styles.btnRow}>
-                  <TouchableOpacity 
-                    style={styles.approveBtn}
-                    onPress={() => handleAction(req.connectionId, 'approved')}
-                  >
+                  <TouchableOpacity style={styles.approveBtn} onPress={() => handleAction(req.connectionId, 'approved')}>
                     <Text style={styles.approveBtnText}>✓ Approve</Text>
                   </TouchableOpacity>
-                  
-                  <TouchableOpacity 
-                    style={styles.rejectBtn}
-                    onPress={() => handleAction(req.connectionId, 'rejected')}
-                  >
+                  <TouchableOpacity style={styles.rejectBtn} onPress={() => handleAction(req.connectionId, 'rejected')}>
                     <Text style={styles.rejectBtnText}>✕ Reject</Text>
                   </TouchableOpacity>
                 </View>
@@ -320,178 +282,80 @@ const fetchTodaySummary = async () => {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.background },
   header: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    padding: 20,
-    paddingBottom: 15,
+    flexDirection: 'row', justifyContent: 'space-between',
+    alignItems: 'center', padding: 20, paddingBottom: 15,
   },
   greeting: { fontSize: 14, color: colors.textSecondary },
   userName: { fontSize: 26, fontWeight: 'bold', color: colors.primary, marginTop: 2 },
   menuButton: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: colors.white,
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: colors.border,
-    elevation: 2,
+    width: 44, height: 44, borderRadius: 22, backgroundColor: colors.white,
+    justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: colors.border, elevation: 2,
   },
   menuText: { fontSize: 22, color: colors.textPrimary },
   nextMedCard: {
-    marginHorizontal: 20,
-    marginBottom: 20,
-    backgroundColor: '#e8f4ff',
-    borderLeftWidth: 5,
-    borderLeftColor: colors.primary,
-    elevation: 3,
+    marginHorizontal: 20, marginBottom: 20, backgroundColor: '#e8f4ff',
+    borderLeftWidth: 5, borderLeftColor: colors.primary, elevation: 3,
   },
-  medHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: 10,
-  },
+  medHeader: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 10 },
   medLabel: { fontSize: 13, color: '#1976d2', fontWeight: '700' },
   medName: { fontSize: 20, fontWeight: 'bold', color: colors.textPrimary },
   medTime: { fontSize: 15, color: colors.primary, marginTop: 6, fontWeight: '500' },
   sectionTitle: {
-    fontSize: 17,
-    fontWeight: 'bold',
-    color: colors.textPrimary,
-    marginHorizontal: 20,
-    marginBottom: 12,
-    marginTop: 5,
+    fontSize: 17, fontWeight: 'bold', color: colors.textPrimary,
+    marginHorizontal: 20, marginBottom: 12, marginTop: 5,
   },
-  quickActions: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    paddingHorizontal: 20,
-    gap: 12,
-    marginBottom: 20,
-  },
+  quickActions: { flexDirection: 'row', flexWrap: 'wrap', paddingHorizontal: 20, gap: 12, marginBottom: 20 },
   actionCard: {
-    width: '48%',
-    backgroundColor: colors.white,
-    borderRadius: 15,
-    padding: 20,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: colors.border,
-    elevation: 2,
+    width: '48%', backgroundColor: colors.white, borderRadius: 15, padding: 20,
+    alignItems: 'center', borderWidth: 1, borderColor: colors.border, elevation: 2,
   },
   actionIconContainer: {
-    width: 60,
-    height: 60,
-    borderRadius: 30,
-    backgroundColor: colors.background,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 10,
+    width: 60, height: 60, borderRadius: 30, backgroundColor: colors.background,
+    justifyContent: 'center', alignItems: 'center', marginBottom: 10,
   },
   actionIcon: { fontSize: 28 },
-  actionText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: colors.textPrimary,
-    textAlign: 'center',
-  },
+  actionText: { fontSize: 13, fontWeight: '600', color: colors.textPrimary, textAlign: 'center' },
   summaryRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 15,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.divider,
+    flexDirection: 'row', alignItems: 'center', paddingVertical: 15,
+    borderBottomWidth: 1, borderBottomColor: colors.divider,
   },
   summaryIcon: { fontSize: 26, marginRight: 15, width: 30 },
   summaryInfo: { flex: 1 },
   summaryLabel: { fontSize: 13, color: colors.textSecondary, marginBottom: 3 },
   summaryValue: { fontSize: 15, fontWeight: '600', color: colors.textPrimary },
-  summaryStatus: {
-    fontSize: 11,
-    fontWeight: 'bold',
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 12,
-  },
+  summaryStatus: { fontSize: 11, fontWeight: 'bold', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 12 },
   statusGreen: { backgroundColor: '#d4edda', color: '#155724' },
   statusOrange: { backgroundColor: '#fff3cd', color: '#856404' },
   statusGray: { backgroundColor: '#e9ecef', color: '#6c757d' },
   requestCard: {
-    marginHorizontal: 20,
-    marginBottom: 12,
-    borderLeftWidth: 4,
-    borderLeftColor: '#ff9800',
-    backgroundColor: '#fff8e1',
+    marginHorizontal: 20, marginBottom: 12, borderLeftWidth: 4,
+    borderLeftColor: '#ff9800', backgroundColor: '#fff8e1',
   },
-  reqHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 8,
-  },
+  reqHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
   reqName: { fontSize: 17, fontWeight: 'bold', color: colors.textPrimary },
   reqRole: {
-    fontSize: 10,
-    backgroundColor: '#ff9800',
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 10,
-    color: colors.white,
-    fontWeight: 'bold',
+    fontSize: 10, backgroundColor: '#ff9800', paddingHorizontal: 8,
+    paddingVertical: 3, borderRadius: 10, color: colors.white, fontWeight: 'bold',
   },
   reqRelation: { fontSize: 14, color: colors.textSecondary, marginBottom: 15 },
   btnRow: { flexDirection: 'row', gap: 10 },
   approveBtn: {
-    flex: 1,
-    height: 44,
-    backgroundColor: colors.primary,
-    borderRadius: 10,
-    justifyContent: 'center',
-    alignItems: 'center',
-    elevation: 2,
+    flex: 1, height: 44, backgroundColor: colors.primary, borderRadius: 10,
+    justifyContent: 'center', alignItems: 'center', elevation: 2,
   },
   approveBtnText: { color: colors.white, fontWeight: 'bold', fontSize: 15 },
   rejectBtn: {
-    flex: 1,
-    height: 44,
-    backgroundColor: colors.white,
-    borderRadius: 10,
-    borderWidth: 2,
-    borderColor: '#e0e0e0',
-    justifyContent: 'center',
-    alignItems: 'center',
+    flex: 1, height: 44, backgroundColor: colors.white, borderRadius: 10,
+    borderWidth: 2, borderColor: '#e0e0e0', justifyContent: 'center', alignItems: 'center',
   },
   rejectBtnText: { color: colors.textPrimary, fontWeight: 'bold', fontSize: 15 },
   codeCard: {
-    marginHorizontal: 20,
-    marginBottom: 30,
-    marginTop: 10,
-    backgroundColor: colors.primary,
-    alignItems: 'center',
-    paddingVertical: 25,
-    elevation: 4,
+    marginHorizontal: 20, marginBottom: 30, marginTop: 10, backgroundColor: colors.primary,
+    alignItems: 'center', paddingVertical: 25, elevation: 4,
   },
-  codeLabel: {
-    color: 'rgba(255,255,255,0.85)',
-    fontSize: 13,
-    marginBottom: 8,
-    fontWeight: '500',
-  },
-  codeValue: {
-    color: colors.white,
-    fontSize: 32,
-    fontWeight: 'bold',
-    letterSpacing: 4,
-    marginBottom: 8,
-  },
-  codeHint: {
-    color: 'rgba(255,255,255,0.75)',
-    fontSize: 12,
-    textAlign: 'center',
-    paddingHorizontal: 20,
-  },
+  codeLabel: { color: 'rgba(255,255,255,0.85)', fontSize: 13, marginBottom: 8, fontWeight: '500' },
+  codeValue: { color: colors.white, fontSize: 32, fontWeight: 'bold', letterSpacing: 4, marginBottom: 8 },
+  codeHint: { color: 'rgba(255,255,255,0.75)', fontSize: 12, textAlign: 'center', paddingHorizontal: 20 },
 });
 
 export default ElderlyDashboard;
