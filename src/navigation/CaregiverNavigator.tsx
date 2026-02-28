@@ -1,3 +1,15 @@
+// CaregiverNavigator.tsx
+// ──────────────────────────────────────────────────────────────────────────────
+// HOW THE NAVIGATION IS STRUCTURED:
+//   CaregiverStack (NativeStack)
+//     ├── CaregiverTabs  (Bottom Tab — Home / Monitor / Alerts)
+//     ├── HealthStatus   ← pushed on top of tabs (no tab bar visible)
+//     └── Report         ← pushed on top of tabs (no tab bar visible)
+//
+// This is why "navigate('HealthStatus')" and "navigate('WeeklyReport')" were
+// crashing — they weren't registered anywhere. Now they are.
+// ──────────────────────────────────────────────────────────────────────────────
+
 import React, { useEffect } from 'react';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
