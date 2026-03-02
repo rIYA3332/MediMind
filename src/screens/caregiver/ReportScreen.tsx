@@ -8,6 +8,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Card from '../../components/Card';
+import VitalChart, { TrendPoint } from '../../components/Vitalchart';
 import { colors } from '../../styles/colors';
 import { getApiUrl } from '../../config/api';
 
@@ -22,9 +23,9 @@ interface Report {
   dateRange?:  { startDate: string; endDate: string; days: number };
 }
 
-type ReportMode   = 'daily' | 'weekly' | 'yearly';
-type DatePreset   = '7' | '14' | '30' | 'custom';
-type Section      = 'overview' | 'health' | 'mood' | 'risks' | 'activity';
+type ReportMode = 'daily' | 'weekly' | 'yearly';
+type DatePreset = '7' | '14' | '30' | 'custom';
+type Section    = 'overview' | 'health' | 'mood' | 'risks' | 'activity';
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 const toISO       = (d: Date) => d.toISOString().split('T')[0];
@@ -40,6 +41,13 @@ const healthIcons: Record<string, string> = {
 const moodEmojis: Record<string, string> = {
   happy: '😊', neutral: '😐', sad: '😢', anxious: '😰', tired: '😴', lonely: '🪑',
 };
+const vitalColors: Record<string, string> = {
+  blood_pressure: '#e17055', blood_sugar: '#6c5ce7', heart_rate: '#ff4757',
+  temperature: '#fd79a8', weight: '#00b894',
+};
+const vitalUnits: Record<string, string> = {
+  blood_pressure: 'mmHg', blood_sugar: 'mg/dL', heart_rate: 'bpm', temperature: '°F', weight: 'kg',
+};
 const SECTIONS: { key: Section; label: string }[] = [
   { key: 'overview', label: 'Overview' },
   { key: 'health',   label: 'Health'   },
@@ -52,38 +60,79 @@ const SECTIONS: { key: Section; label: string }[] = [
 const ReportScreen = ({ route, navigation }: any) => {
   const { elderId, elderName } = route.params || {};
 
-  // Report mode
-  const [mode, setMode]           = useState<ReportMode>('weekly');
+  const [mode, setMode]                 = useState<ReportMode>('weekly');
+  const todayISO                        = toISO(new Date());
+  const [startDate, setStartDate]       = useState(() => toISO(addDays(new Date(), -6)));
+  const [endDate, setEndDate]           = useState(todayISO);
+  const [preset, setPreset]             = useState<DatePreset>('7');
+  const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
+  const [showPicker, setShowPicker]     = useState(false);
+  const [pickerTarget, setPickerTarget] = useState<'start' | 'end'>('start');
 
-  // Date state
-  const todayISO = toISO(new Date());
-  const [startDate, setStartDate] = useState(() => toISO(addDays(new Date(), -6)));
-  const [endDate, setEndDate]     = useState(todayISO);
-  const [preset, setPreset]       = useState<DatePreset>('7');
-  const [selectedYear, setSelectedYear]   = useState(new Date().getFullYear());
-  const [showPicker, setShowPicker]       = useState(false);
-  const [pickerTarget, setPickerTarget]   = useState<'start' | 'end'>('start');
-
-  // Data
-  const [report, setReport]       = useState<Report | null>(null);
-  const [loading, setLoading]     = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [downloading, setDownloading] = useState(false);
+  const [report, setReport]             = useState<Report | null>(null);
+  const [trends, setTrends]             = useState<Record<string, TrendPoint[]>>({});
+  const [loading, setLoading]           = useState(true);
+  const [refreshing, setRefreshing]     = useState(false);
+  const [downloading, setDownloading]   = useState(false);
   const [activeSection, setActiveSection] = useState<Section>('overview');
 
-  // ── Compute date range from mode ────────────────────────────────────────────
+  // ── Compute date range ───────────────────────────────────────────────────────
   const computedRange = useCallback((): { s: string; e: string } => {
-    if (mode === 'daily') {
-      return { s: endDate, e: endDate }; // single day
-    }
-    if (mode === 'yearly') {
-      return { s: startOfYear(selectedYear), e: endOfYear(selectedYear) };
-    }
-    // weekly / custom
+    if (mode === 'daily')  return { s: endDate, e: endDate };
+    if (mode === 'yearly') return { s: startOfYear(selectedYear), e: endOfYear(selectedYear) };
     return { s: startDate, e: endDate };
   }, [mode, startDate, endDate, selectedYear]);
 
-  // ── Fetch ───────────────────────────────────────────────────────────────────
+  // ── Fetch trends ─────────────────────────────────────────────────────────────
+ // ── Fetch trends (FIXED TO USE startDate & endDate) ───────────────────────────
+const fetchTrends = useCallback(async (s: string, e: string, logTypes: string[]) => {
+  if (!elderId || logTypes.length === 0) return;
+
+  const results: Record<string, TrendPoint[]> = {};
+
+  await Promise.all(
+    logTypes.map(async (type) => {
+      try {
+        const r = await fetch(
+          getApiUrl(
+            `/api/health-trends/${elderId}/${type}?startDate=${s}&endDate=${e}`
+          )
+        );
+
+        const d = await r.json();
+
+        console.log("Trend response for", type, d); // DEBUG
+
+        results[type] = (Array.isArray(d) ? d : []).map((row: any) => ({
+          value:
+            row.numericValue != null
+              ? Number(row.numericValue)
+              : row.value != null
+              ? Number(row.value)
+              : 0,
+
+          label: new Date(row.logged_at).toLocaleDateString("en-US", {
+            month: "short",
+            day: "numeric",
+          }),
+
+          systolic:
+            row.systolic != null ? Number(row.systolic) : null,
+
+          diastolic:
+            row.diastolic != null ? Number(row.diastolic) : null,
+        }));
+      } catch (err) {
+        console.log("Trend fetch error:", err);
+        results[type] = [];
+      }
+    })
+  );
+
+  setTrends(results);
+}, [elderId]); 
+
+  // ── Fetch report ─────────────────────────────────────────────────────────────
   const fetchReport = useCallback(async () => {
     if (!elderId) return;
     setLoading(true);
@@ -92,23 +141,23 @@ const ReportScreen = ({ route, navigation }: any) => {
       const res  = await fetch(getApiUrl(`/api/reports/weekly/${elderId}?startDate=${s}&endDate=${e}`));
       const data = await res.json();
       setReport(data);
+      const logTypes = (data?.healthLogs || []).map((l: any) => l.log_type);
+      await fetchTrends(s, e, logTypes);
     } catch (err) { console.log('Report fetch error:', err); }
     finally { setLoading(false); setRefreshing(false); }
-  }, [elderId, computedRange]);
+  }, [elderId, computedRange, fetchTrends]);
 
   useEffect(() => { fetchReport(); }, [mode, startDate, endDate, selectedYear]);
 
   const onRefresh = () => { setRefreshing(true); fetchReport(); };
 
-  // ── Apply preset (weekly mode) ───────────────────────────────────────────────
+  // ── Apply preset ─────────────────────────────────────────────────────────────
   const applyPreset = (p: DatePreset) => {
     if (p === 'custom') { setPreset('custom'); return; }
     setPreset(p);
-    const days  = parseInt(p);
-    const end   = new Date();
-    const start = addDays(end, -(days - 1));
-    setStartDate(toISO(start));
-    setEndDate(toISO(end));
+    const d = parseInt(p);
+    setStartDate(toISO(addDays(new Date(), -(d - 1))));
+    setEndDate(toISO(new Date()));
   };
 
   // ── Download PDF ─────────────────────────────────────────────────────────────
@@ -123,33 +172,38 @@ const ReportScreen = ({ route, navigation }: any) => {
     finally { setDownloading(false); }
   };
 
-  // ── Helpers ──────────────────────────────────────────────────────────────────
-  const adherencePct  = !report || !report.medications.total ? 0
+  // ── Derived values ────────────────────────────────────────────────────────────
+  const adherencePct   = !report || !report.medications.total ? 0
     : Math.round((report.medications.taken / report.medications.total) * 100);
-  const adherenceClr  = adherencePct >= 90 ? '#00b894' : adherencePct >= 70 ? '#fdcb6e' : '#ff7675';
+  const adherenceClr   = adherencePct >= 90 ? '#00b894' : adherencePct >= 70 ? '#fdcb6e' : '#ff7675';
   const adherenceLabel = adherencePct >= 90 ? 'Excellent' : adherencePct >= 70 ? 'Good' : 'Needs Improvement';
   const getHealthLabel = (t: string) => t.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
   const getMoodColor   = (m: string) => ({
-    happy: '#00b894', neutral: '#74b9ff', sad: '#ff7675', anxious: '#fdcb6e', tired: '#a29bfe', lonely: '#fd79a8',
+    happy: '#00b894', neutral: '#74b9ff', sad: '#ff7675',
+    anxious: '#fdcb6e', tired: '#a29bfe', lonely: '#fd79a8',
   }[m] || colors.textSecondary);
-  const criticalRisks = report?.risks.filter(r => r.severity === 'critical').length || 0;
-  const dangerRisks   = report?.risks.filter(r => r.severity === 'danger').length   || 0;
+  const criticalRisks  = report?.risks.filter(r => r.severity === 'critical').length || 0;
+  const dangerRisks    = report?.risks.filter(r => r.severity === 'danger').length   || 0;
+  const getUnit        = (type: string) => vitalUnits[type] || '';
 
-  const getUnit = (type: string) => ({
-    blood_pressure: 'mmHg', blood_sugar: 'mg/dL', heart_rate: 'bpm', temperature: '°F', weight: 'kg',
-  }[type] || '');
+  // ── Severity style ────────────────────────────────────────────────────────────
+  const sev = (s: string) => s === 'critical'
+    ? { bg: '#fff0f0', border: '#ff4757', text: '#ff4757', label: '🚨 CRITICAL' }
+    : s === 'danger'
+    ? { bg: '#fff5f0', border: '#e17055', text: '#e17055', label: '⚠️ DANGER'   }
+    : { bg: '#fffdf0', border: '#fdcb6e', text: '#856404', label: '⚠️ WARNING'  };
 
   // ── Date picker modal ────────────────────────────────────────────────────────
   const renderDatePicker = () => {
-    const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-    const yr     = new Date().getFullYear();
-    const years  = [yr - 2, yr - 1, yr];
-    const days   = Array.from({ length: 31 }, (_, i) => i + 1);
+    const months   = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    const yr       = new Date().getFullYear();
+    const years    = [yr - 2, yr - 1, yr];
+    const dayNums  = Array.from({ length: 31 }, (_, i) => i + 1);
     const parseISO = (iso: string) => { const d = new Date(iso); return { year: d.getFullYear(), month: d.getMonth(), day: d.getDate() }; };
     const current  = parseISO(pickerTarget === 'start' ? startDate : endDate);
     const setDatePart = (part: 'year' | 'month' | 'day', val: number) => {
-      const d   = parseISO(pickerTarget === 'start' ? startDate : endDate);
-      d[part]   = val;
+      const d = parseISO(pickerTarget === 'start' ? startDate : endDate);
+      d[part] = val;
       const iso = toISO(new Date(d.year, d.month, Math.min(d.day, 28)));
       pickerTarget === 'start' ? setStartDate(iso) : setEndDate(iso);
     };
@@ -168,7 +222,7 @@ const ReportScreen = ({ route, navigation }: any) => {
                 ))}
               </ScrollView>
               <ScrollView style={styles.pickerCol} showsVerticalScrollIndicator={false}>
-                {days.map(d => (
+                {dayNums.map(d => (
                   <TouchableOpacity key={d} onPress={() => setDatePart('day', d)}
                     style={[styles.pickerItem, current.day === d && styles.pickerItemActive]}>
                     <Text style={[styles.pickerItemText, current.day === d && styles.pickerItemActiveText]}>{d}</Text>
@@ -193,10 +247,9 @@ const ReportScreen = ({ route, navigation }: any) => {
     );
   };
 
-  // ── Date controls (changes based on mode) ────────────────────────────────────
+  // ── Date controls ─────────────────────────────────────────────────────────────
   const renderDateControls = () => {
     const { s, e } = computedRange();
-
     if (mode === 'daily') {
       return (
         <View style={styles.dateControls}>
@@ -213,7 +266,6 @@ const ReportScreen = ({ route, navigation }: any) => {
         </View>
       );
     }
-
     if (mode === 'yearly') {
       return (
         <View style={styles.dateControls}>
@@ -230,8 +282,6 @@ const ReportScreen = ({ route, navigation }: any) => {
         </View>
       );
     }
-
-    // Weekly / custom
     return (
       <>
         <View style={styles.presetRow}>
@@ -258,13 +308,6 @@ const ReportScreen = ({ route, navigation }: any) => {
     );
   };
 
-  // ── Severity card style ───────────────────────────────────────────────────────
-  const sev = (s: string) => s === 'critical'
-    ? { bg: '#fff0f0', border: '#ff4757', text: '#ff4757', label: '🚨 CRITICAL' }
-    : s === 'danger'
-    ? { bg: '#fff5f0', border: '#e17055', text: '#e17055', label: '⚠️ DANGER'   }
-    : { bg: '#fffdf0', border: '#fdcb6e', text: '#856404', label: '⚠️ WARNING'  };
-
   // ── Render ────────────────────────────────────────────────────────────────────
   return (
     <SafeAreaView style={styles.container}>
@@ -285,7 +328,7 @@ const ReportScreen = ({ route, navigation }: any) => {
         </TouchableOpacity>
       </View>
 
-      {/* Mode selector: Daily / Weekly / Yearly */}
+      {/* Mode selector */}
       <View style={styles.modeRow}>
         {(['daily','weekly','yearly'] as ReportMode[]).map(m => (
           <TouchableOpacity key={m} style={[styles.modeBtn, mode === m && styles.modeBtnActive]}
@@ -304,7 +347,7 @@ const ReportScreen = ({ route, navigation }: any) => {
 
       {/* Critical risk banner */}
       {!loading && (criticalRisks > 0 || dangerRisks > 0) && (
-        <View style={[styles.riskBanner, criticalRisks > 0 ? { backgroundColor: '#ff4757' } : { backgroundColor: '#e17055' }]}>
+        <View style={[styles.riskBanner, { backgroundColor: criticalRisks > 0 ? '#ff4757' : '#e17055' }]}>
           <Text style={styles.riskBannerText}>
             {criticalRisks > 0
               ? `🚨 ${criticalRisks} CRITICAL risk${criticalRisks > 1 ? 's' : ''} — immediate attention needed`
@@ -337,7 +380,6 @@ const ReportScreen = ({ route, navigation }: any) => {
           {/* ── OVERVIEW ── */}
           {activeSection === 'overview' && (
             <>
-              {/* Summary card */}
               <Card style={styles.card}>
                 <Text style={styles.cardTitle}>📝 Summary</Text>
                 <View style={styles.summaryLine}>
@@ -350,7 +392,6 @@ const ReportScreen = ({ route, navigation }: any) => {
                 <View style={styles.progressTrack}>
                   <View style={[styles.progressFill, { width: `${adherencePct}%` as any, backgroundColor: adherenceClr }]} />
                 </View>
-
                 <View style={[styles.summaryLine, { marginTop: 10 }]}>
                   <Text style={styles.summaryKey}>Health Monitoring:</Text>
                   <Text style={styles.summaryVal}>{report?.healthLogs.reduce((a, l) => a + l.count, 0) || 0} entries</Text>
@@ -360,32 +401,34 @@ const ReportScreen = ({ route, navigation }: any) => {
                     {(report?.healthLogs.reduce((a, l) => a + l.count, 0) || 0) > 0 ? 'Regular' : 'Low'}
                   </Text>
                 </View>
-
                 <View style={[styles.summaryLine, { marginTop: 10 }]}>
                   <Text style={styles.summaryKey}>Mood Tracking:</Text>
                   <Text style={styles.summaryVal}>{report?.mood.reduce((a, m) => a + m.count, 0) || 0} check-ins</Text>
                 </View>
-                <View style={[styles.badge, { backgroundColor: '#d4faf022', borderColor: '#00b894' }]}>
-                  <Text style={[styles.badgeText, { color: '#00b894' }]}>
-                    {(report?.mood.reduce((a, m) => a + m.count, 0) || 0) >= (mode === 'daily' ? 1 : mode === 'yearly' ? 200 : 5) ? 'Good' : 'Fair'}
-                  </Text>
-                </View>
-
                 <View style={[styles.summaryLine, { marginTop: 10 }]}>
                   <Text style={styles.summaryKey}>Alerts:</Text>
                   <Text style={styles.summaryVal}>{report?.alerts.alert_count || 0} in this period</Text>
                 </View>
               </Card>
 
-              {/* Vital trend cards */}
+              {/* Vital trend charts */}
               {report?.healthLogs.map(log => (
                 <View key={log.log_type} style={styles.trendSection}>
-                  <Text style={styles.trendTitle}>{getHealthLabel(log.log_type)} Trends</Text>
-                  <View style={styles.chartBox}>
-                    <Text style={styles.chartBoxText}>{mode === 'daily' ? 'Today\'s' : mode === 'yearly' ? 'Yearly' : 'Weekly'} {getHealthLabel(log.log_type)} Chart</Text>
-                  </View>
+                  <Text style={styles.trendTitle}>
+                    {healthIcons[log.log_type] || '📊'} {getHealthLabel(log.log_type)} Trends
+                  </Text>
+
+                  <VitalChart
+                    data={trends[log.log_type] || []}
+                    logType={log.log_type}
+                    unit={getUnit(log.log_type)}
+                    themeColor={vitalColors[log.log_type]}
+                  />
+
                   {log.avg_value != null && (
-                    <Text style={styles.chartAvg}>Average: {Number(log.avg_value).toFixed(1)} {getUnit(log.log_type)}</Text>
+                    <Text style={styles.chartAvg}>
+                      Average: {Number(log.avg_value).toFixed(1)} {getUnit(log.log_type)}
+                    </Text>
                   )}
                   <View style={styles.minMaxRow}>
                     <Text style={styles.minMaxItem}>Min: <Text style={{ color: '#00b894', fontWeight: '700' }}>{log.min_value}</Text></Text>
@@ -397,8 +440,8 @@ const ReportScreen = ({ route, navigation }: any) => {
 
               {/* Emotional Well-being */}
               {report && report.mood.length > 0 && (() => {
-                const top  = report.mood.reduce((a, b) => a.count > b.count ? a : b);
-                const sad  = report.mood.filter(m => ['sad','lonely','anxious'].includes(m.mood)).reduce((a, m) => a + m.count, 0);
+                const top   = report.mood.reduce((a, b) => a.count > b.count ? a : b);
+                const sad   = report.mood.filter(m => ['sad','lonely','anxious'].includes(m.mood)).reduce((a, m) => a + m.count, 0);
                 const happy = report.mood.filter(m => m.mood === 'happy').reduce((a, m) => a + m.count, 0);
                 return (
                   <View style={styles.trendSection}>
@@ -436,10 +479,10 @@ const ReportScreen = ({ route, navigation }: any) => {
                   <View style={styles.trendSection}>
                     <Text style={styles.trendTitle}>⚠️ Health Risks ({report.risks.length})</Text>
                     {report.risks.slice(0, 3).map((risk, i) => {
-                      const s = sev(risk.severity);
+                      const sv = sev(risk.severity);
                       return (
-                        <View key={i} style={[styles.riskCard, { borderLeftColor: s.border, backgroundColor: s.bg }]}>
-                          <Text style={[styles.riskSeverity, { color: s.text }]}>{s.label}</Text>
+                        <View key={i} style={[styles.riskCard, { borderLeftColor: sv.border, backgroundColor: sv.bg }]}>
+                          <Text style={[styles.riskSeverity, { color: sv.text }]}>{sv.label}</Text>
                           <Text style={styles.riskMsg}>{risk.message}</Text>
                         </View>
                       );
@@ -463,14 +506,33 @@ const ReportScreen = ({ route, navigation }: any) => {
                   <View style={styles.vitalHeader}>
                     <Text style={{ fontSize: 24, marginRight: 8 }}>{healthIcons[log.log_type] || '📊'}</Text>
                     <Text style={styles.vitalLabel}>{getHealthLabel(log.log_type)}</Text>
-                    <View style={styles.vitalCountBadge}><Text style={styles.vitalCountText}>{log.count} logs</Text></View>
+                    <View style={styles.vitalCountBadge}>
+                      <Text style={styles.vitalCountText}>{log.count} logs</Text>
+                    </View>
                   </View>
-                  <View style={styles.vitalStats}>
+
+                  <VitalChart
+                    data={trends[log.log_type] || []}
+                    logType={log.log_type}
+                    unit={getUnit(log.log_type)}
+                    themeColor={vitalColors[log.log_type]}
+                  />
+
+                  <View style={[styles.vitalStats, { marginTop: 10 }]}>
                     {log.avg_value != null && (
-                      <View style={styles.vitalStat}><Text style={styles.vitalStatLabel}>Avg</Text><Text style={styles.vitalStatVal}>{Number(log.avg_value).toFixed(1)}</Text></View>
+                      <View style={styles.vitalStat}>
+                        <Text style={styles.vitalStatLabel}>Avg</Text>
+                        <Text style={styles.vitalStatVal}>{Number(log.avg_value).toFixed(1)}</Text>
+                      </View>
                     )}
-                    <View style={styles.vitalStat}><Text style={styles.vitalStatLabel}>Min</Text><Text style={[styles.vitalStatVal, { color: '#00b894' }]}>{log.min_value}</Text></View>
-                    <View style={styles.vitalStat}><Text style={styles.vitalStatLabel}>Max</Text><Text style={[styles.vitalStatVal, { color: '#e17055' }]}>{log.max_value}</Text></View>
+                    <View style={styles.vitalStat}>
+                      <Text style={styles.vitalStatLabel}>Min</Text>
+                      <Text style={[styles.vitalStatVal, { color: '#00b894' }]}>{log.min_value}</Text>
+                    </View>
+                    <View style={styles.vitalStat}>
+                      <Text style={styles.vitalStatLabel}>Max</Text>
+                      <Text style={[styles.vitalStatVal, { color: '#e17055' }]}>{log.max_value}</Text>
+                    </View>
                   </View>
                 </Card>
               ))
@@ -512,11 +574,11 @@ const ReportScreen = ({ route, navigation }: any) => {
                 </Card>
               )
               : report.risks.map((risk, i) => {
-                const s = sev(risk.severity);
+                const sv = sev(risk.severity);
                 return (
-                  <View key={i} style={[styles.riskCard, styles.riskCardFull, { borderLeftColor: s.border, backgroundColor: s.bg }]}>
+                  <View key={i} style={[styles.riskCard, styles.riskCardFull, { borderLeftColor: sv.border, backgroundColor: sv.bg }]}>
                     <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 }}>
-                      <Text style={[styles.riskSeverity, { color: s.text }]}>{s.label}</Text>
+                      <Text style={[styles.riskSeverity, { color: sv.text }]}>{sv.label}</Text>
                       <Text style={{ fontSize: 11, color: colors.textSecondary }}>{new Date(risk.detected_at).toLocaleDateString()}</Text>
                     </View>
                     <Text style={{ fontSize: 13, fontWeight: '700', color: colors.textPrimary, marginBottom: 4 }}>
@@ -538,9 +600,9 @@ const ReportScreen = ({ route, navigation }: any) => {
                   {report.activity.map((item, i) => {
                     const meta: Record<string, { icon: string; label: string; color: string }> = {
                       health_log:        { icon: '📊', label: 'Health Logged',    color: '#00b894' },
-                      mood_log:          { icon: '😊', label: 'Mood Recorded',     color: '#74b9ff' },
-                      medication_taken:  { icon: '💊', label: 'Medication Taken',  color: '#a29bfe' },
-                      medication_missed: { icon: '⚠️', label: 'Medication Missed', color: '#ff7675' },
+                      mood_log:          { icon: '😊', label: 'Mood Recorded',    color: '#74b9ff' },
+                      medication_taken:  { icon: '💊', label: 'Medication Taken', color: '#a29bfe' },
+                      medication_missed: { icon: '⚠️', label: 'Medication Missed',color: '#ff7675' },
                     };
                     const info = meta[item.activity_type] || { icon: '📌', label: item.activity_type, color: colors.textSecondary };
                     return (
@@ -571,129 +633,97 @@ const ReportScreen = ({ route, navigation }: any) => {
 
 // ── Styles ─────────────────────────────────────────────────────────────────────
 const styles = StyleSheet.create({
-  container:  { flex: 1, backgroundColor: colors.background },
-
-  // Header
-  header:     { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: 16, backgroundColor: colors.white, borderBottomWidth: 1, borderBottomColor: colors.border },
-  backBtn:    { padding: 4 },
-  backIcon:   { fontSize: 20, color: colors.primary },
-  headerMid:  { flex: 1, marginHorizontal: 12 },
-  headerTitle: { fontSize: 17, fontWeight: 'bold', color: colors.textPrimary },
-  headerSub:  { fontSize: 12, color: colors.textSecondary, marginTop: 2 },
-  downloadBtn: { backgroundColor: colors.primary, paddingHorizontal: 12, paddingVertical: 7, borderRadius: 8 },
-  downloadBtnText: { color: '#fff', fontSize: 12, fontWeight: '700' },
-
-  // Mode selector
-  modeRow:    { flexDirection: 'row', backgroundColor: colors.white, borderBottomWidth: 1, borderBottomColor: colors.border },
-  modeBtn:    { flex: 1, paddingVertical: 12, alignItems: 'center', borderBottomWidth: 3, borderBottomColor: 'transparent' },
-  modeBtnActive: { borderBottomColor: colors.primary },
-  modeBtnText: { fontSize: 13, fontWeight: '600', color: colors.textSecondary },
-  modeBtnActiveText: { color: colors.primary },
-
-  // Date controls
-  dateControlsWrap: { backgroundColor: colors.white, paddingHorizontal: 16, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: colors.border },
-  dateControls: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 12 },
-  arrowBtn:   { width: 36, height: 36, borderRadius: 18, borderWidth: 1, borderColor: colors.border, justifyContent: 'center', alignItems: 'center' },
-  arrowText:  { fontSize: 22, color: colors.primary, lineHeight: 26 },
-  datePill:   { paddingHorizontal: 14, paddingVertical: 7, borderRadius: 10, backgroundColor: '#e8f4ff', borderWidth: 1, borderColor: '#b3d8f5' },
-  datePillText: { fontSize: 13, color: colors.primary, fontWeight: '700' },
-  presetRow:  { flexDirection: 'row', gap: 8, marginBottom: 8, flexWrap: 'wrap' },
-  presetBtn:  { paddingHorizontal: 12, paddingVertical: 5, borderRadius: 14, borderWidth: 1, borderColor: colors.border },
-  presetBtnActive: { backgroundColor: colors.primary, borderColor: colors.primary },
-  presetBtnText: { fontSize: 12, fontWeight: '600', color: colors.textSecondary },
+  container:           { flex: 1, backgroundColor: colors.background },
+  header:              { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: 16, backgroundColor: colors.white, borderBottomWidth: 1, borderBottomColor: colors.border },
+  backBtn:             { padding: 4 },
+  backIcon:            { fontSize: 20, color: colors.primary },
+  headerMid:           { flex: 1, marginHorizontal: 12 },
+  headerTitle:         { fontSize: 17, fontWeight: 'bold', color: colors.textPrimary },
+  headerSub:           { fontSize: 12, color: colors.textSecondary, marginTop: 2 },
+  downloadBtn:         { backgroundColor: colors.primary, paddingHorizontal: 12, paddingVertical: 7, borderRadius: 8 },
+  downloadBtnText:     { color: '#fff', fontSize: 12, fontWeight: '700' },
+  modeRow:             { flexDirection: 'row', backgroundColor: colors.white, borderBottomWidth: 1, borderBottomColor: colors.border },
+  modeBtn:             { flex: 1, paddingVertical: 12, alignItems: 'center', borderBottomWidth: 3, borderBottomColor: 'transparent' },
+  modeBtnActive:       { borderBottomColor: colors.primary },
+  modeBtnText:         { fontSize: 13, fontWeight: '600', color: colors.textSecondary },
+  modeBtnActiveText:   { color: colors.primary },
+  dateControlsWrap:    { backgroundColor: colors.white, paddingHorizontal: 16, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: colors.border },
+  dateControls:        { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 12 },
+  arrowBtn:            { width: 36, height: 36, borderRadius: 18, borderWidth: 1, borderColor: colors.border, justifyContent: 'center', alignItems: 'center' },
+  arrowText:           { fontSize: 22, color: colors.primary, lineHeight: 26 },
+  datePill:            { paddingHorizontal: 14, paddingVertical: 7, borderRadius: 10, backgroundColor: '#e8f4ff', borderWidth: 1, borderColor: '#b3d8f5' },
+  datePillText:        { fontSize: 13, color: colors.primary, fontWeight: '700' },
+  presetRow:           { flexDirection: 'row', gap: 8, marginBottom: 8, flexWrap: 'wrap' },
+  presetBtn:           { paddingHorizontal: 12, paddingVertical: 5, borderRadius: 14, borderWidth: 1, borderColor: colors.border },
+  presetBtnActive:     { backgroundColor: colors.primary, borderColor: colors.primary },
+  presetBtnText:       { fontSize: 12, fontWeight: '600', color: colors.textSecondary },
   presetBtnActiveText: { color: '#fff' },
-  dateRangeRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  weekOfLabel: { fontSize: 12, color: colors.textSecondary },
-  dateSep:    { fontSize: 13, color: colors.textSecondary },
-
-  // Risk banner
-  riskBanner: { padding: 12, alignItems: 'center' },
-  riskBannerText: { color: '#fff', fontWeight: 'bold', fontSize: 13, textAlign: 'center' },
-
-  // Section tabs
-  sectionTabBar: { backgroundColor: colors.white, paddingHorizontal: 12, paddingVertical: 8, maxHeight: 52, borderBottomWidth: 1, borderBottomColor: colors.border },
-  sectionTab: { paddingHorizontal: 16, paddingVertical: 6, borderRadius: 20, borderWidth: 1, borderColor: colors.border, marginRight: 8 },
-  sectionTabActive: { backgroundColor: colors.primary, borderColor: colors.primary },
-  sectionTabText: { fontSize: 12, fontWeight: '600', color: colors.textSecondary },
-
-  loadingBox: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  loadingText: { marginTop: 12, color: colors.textSecondary, fontSize: 15 },
-
-  body:       { flex: 1, paddingHorizontal: 16, paddingTop: 12 },
-  card:       { marginBottom: 14 },
-  cardTitle:  { fontSize: 15, fontWeight: 'bold', color: colors.textPrimary, marginBottom: 12 },
-  emptyText:  { textAlign: 'center', color: colors.textSecondary, fontSize: 14, paddingVertical: 20 },
-
-  // Summary
-  summaryLine: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 },
-  summaryKey: { fontSize: 13, fontWeight: '600', color: colors.textPrimary },
-  summaryVal: { fontSize: 13, color: colors.textSecondary },
-  badge:      { paddingHorizontal: 10, paddingVertical: 3, borderRadius: 12, borderWidth: 1, alignSelf: 'flex-start', marginBottom: 2 },
-  badgeText:  { fontSize: 12, fontWeight: '600' },
-  progressTrack: { height: 8, backgroundColor: '#e0e0e0', borderRadius: 4, overflow: 'hidden', marginVertical: 8 },
-  progressFill:  { height: '100%', borderRadius: 4 },
-
-  // Trends
-  trendSection: { marginBottom: 18 },
-  trendTitle:   { fontSize: 15, fontWeight: '700', color: colors.textPrimary, marginBottom: 10 },
-  chartBox:     { height: 100, borderWidth: 1.5, borderColor: '#ccc', borderRadius: 10, borderStyle: 'dashed', justifyContent: 'center', alignItems: 'center', backgroundColor: '#fafafa', marginBottom: 8 },
-  chartBoxText: { fontSize: 13, color: '#bbb' },
-  chartAvg:     { fontSize: 12, color: colors.textSecondary, textAlign: 'center', marginBottom: 6 },
-  minMaxRow:    { flexDirection: 'row', justifyContent: 'space-around', backgroundColor: colors.white, borderRadius: 8, paddingVertical: 8, borderWidth: 1, borderColor: colors.border },
-  minMaxItem:   { fontSize: 12, color: colors.textSecondary },
-
-  // Wellbeing
-  wellbeingCard: { backgroundColor: colors.white, borderRadius: 12, padding: 14, borderWidth: 1, borderColor: colors.border },
-  wbRow:   { flexDirection: 'row', marginBottom: 6 },
-  wbKey:   { fontSize: 13, fontWeight: '600', color: colors.textPrimary, width: 155 },
-  wbVal:   { fontSize: 13, color: colors.textSecondary },
-  wbNote:  { fontSize: 12, color: '#e17055', marginTop: 4, fontStyle: 'italic' },
-
-  // Mood bars
-  moodRow:   { flexDirection: 'row', alignItems: 'center', marginBottom: 8 },
-  moodEmoji: { fontSize: 16, width: 26 },
-  moodLabel: { fontSize: 12, width: 60, color: colors.textPrimary, fontWeight: '500' },
-  moodTrack: { flex: 1, height: 7, backgroundColor: '#e0e0e0', borderRadius: 4, overflow: 'hidden', marginHorizontal: 8 },
-  moodFill:  { height: '100%', borderRadius: 4 },
-  moodCount: { fontSize: 11, color: colors.textSecondary, width: 22, textAlign: 'right' },
-
-  // No risks
-  noRisksRow: { backgroundColor: '#d4faf0', borderRadius: 10, padding: 12, alignItems: 'center', marginBottom: 14 },
-  noRisksText: { fontSize: 13, color: '#00b894', fontWeight: '600' },
-
-  // Risks
-  riskCard:     { borderLeftWidth: 4, padding: 12, borderRadius: 10, marginBottom: 10 },
-  riskCardFull: { marginBottom: 12 },
-  riskSeverity: { fontSize: 11, fontWeight: 'bold', marginBottom: 4 },
-  riskMsg:      { fontSize: 13, color: colors.textPrimary, lineHeight: 19 },
-  viewAllLink:  { color: colors.primary, fontSize: 13, fontWeight: '600', textAlign: 'center', marginTop: 4 },
-
-  // Vitals
-  vitalHeader:    { flexDirection: 'row', alignItems: 'center', marginBottom: 10 },
-  vitalLabel:     { fontSize: 14, fontWeight: 'bold', color: colors.textPrimary, flex: 1 },
-  vitalCountBadge: { backgroundColor: '#e8f4ff', paddingHorizontal: 10, paddingVertical: 3, borderRadius: 12 },
-  vitalCountText: { fontSize: 11, color: colors.primary, fontWeight: '600' },
-  vitalStats:     { flexDirection: 'row', justifyContent: 'space-around', backgroundColor: colors.background, borderRadius: 10, padding: 12 },
-  vitalStat:      { alignItems: 'center' },
-  vitalStatLabel: { fontSize: 11, color: colors.textSecondary, marginBottom: 4 },
-  vitalStatVal:   { fontSize: 15, fontWeight: 'bold', color: colors.textPrimary },
-
-  // Activity
-  activityRow:   { flexDirection: 'row', alignItems: 'center', paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: colors.border },
-  activityBadge: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12 },
-
-  // Modal
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
-  modalBox:     { backgroundColor: '#fff', borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20, maxHeight: 400 },
-  modalTitle:   { fontSize: 16, fontWeight: 'bold', color: colors.textPrimary, marginBottom: 16, textAlign: 'center' },
-  pickerRow:    { flexDirection: 'row', height: 200, gap: 8 },
-  pickerCol:    { flex: 1 },
-  pickerItem:   { paddingVertical: 10, alignItems: 'center', borderRadius: 8 },
+  dateRangeRow:        { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  weekOfLabel:         { fontSize: 12, color: colors.textSecondary },
+  dateSep:             { fontSize: 13, color: colors.textSecondary },
+  riskBanner:          { padding: 12, alignItems: 'center' },
+  riskBannerText:      { color: '#fff', fontWeight: 'bold', fontSize: 13, textAlign: 'center' },
+  sectionTabBar:       { backgroundColor: colors.white, paddingHorizontal: 12, paddingVertical: 8, maxHeight: 52, borderBottomWidth: 1, borderBottomColor: colors.border },
+  sectionTab:          { paddingHorizontal: 16, paddingVertical: 6, borderRadius: 20, borderWidth: 1, borderColor: colors.border, marginRight: 8 },
+  sectionTabActive:    { backgroundColor: colors.primary, borderColor: colors.primary },
+  sectionTabText:      { fontSize: 12, fontWeight: '600', color: colors.textSecondary },
+  loadingBox:          { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  loadingText:         { marginTop: 12, color: colors.textSecondary, fontSize: 15 },
+  body:                { flex: 1, paddingHorizontal: 16, paddingTop: 12 },
+  card:                { marginBottom: 14 },
+  cardTitle:           { fontSize: 15, fontWeight: 'bold', color: colors.textPrimary, marginBottom: 12 },
+  emptyText:           { textAlign: 'center', color: colors.textSecondary, fontSize: 14, paddingVertical: 20 },
+  summaryLine:         { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 },
+  summaryKey:          { fontSize: 13, fontWeight: '600', color: colors.textPrimary },
+  summaryVal:          { fontSize: 13, color: colors.textSecondary },
+  badge:               { paddingHorizontal: 10, paddingVertical: 3, borderRadius: 12, borderWidth: 1, alignSelf: 'flex-start', marginBottom: 2 },
+  badgeText:           { fontSize: 12, fontWeight: '600' },
+  progressTrack:       { height: 8, backgroundColor: '#e0e0e0', borderRadius: 4, overflow: 'hidden', marginVertical: 8 },
+  progressFill:        { height: '100%', borderRadius: 4 },
+  trendSection:        { marginBottom: 18 },
+  trendTitle:          { fontSize: 15, fontWeight: '700', color: colors.textPrimary, marginBottom: 10 },
+  chartAvg:            { fontSize: 12, color: colors.textSecondary, textAlign: 'center', marginBottom: 6, marginTop: 4 },
+  minMaxRow:           { flexDirection: 'row', justifyContent: 'space-around', backgroundColor: colors.white, borderRadius: 8, paddingVertical: 8, borderWidth: 1, borderColor: colors.border, marginTop: 8 },
+  minMaxItem:          { fontSize: 12, color: colors.textSecondary },
+  wellbeingCard:       { backgroundColor: colors.white, borderRadius: 12, padding: 14, borderWidth: 1, borderColor: colors.border },
+  wbRow:               { flexDirection: 'row', marginBottom: 6 },
+  wbKey:               { fontSize: 13, fontWeight: '600', color: colors.textPrimary, width: 155 },
+  wbVal:               { fontSize: 13, color: colors.textSecondary },
+  wbNote:              { fontSize: 12, color: '#e17055', marginTop: 4, fontStyle: 'italic' },
+  moodRow:             { flexDirection: 'row', alignItems: 'center', marginBottom: 8 },
+  moodEmoji:           { fontSize: 16, width: 26 },
+  moodLabel:           { fontSize: 12, width: 60, color: colors.textPrimary, fontWeight: '500' },
+  moodTrack:           { flex: 1, height: 7, backgroundColor: '#e0e0e0', borderRadius: 4, overflow: 'hidden', marginHorizontal: 8 },
+  moodFill:            { height: '100%', borderRadius: 4 },
+  moodCount:           { fontSize: 11, color: colors.textSecondary, width: 22, textAlign: 'right' },
+  noRisksRow:          { backgroundColor: '#d4faf0', borderRadius: 10, padding: 12, alignItems: 'center', marginBottom: 14 },
+  noRisksText:         { fontSize: 13, color: '#00b894', fontWeight: '600' },
+  riskCard:            { borderLeftWidth: 4, padding: 12, borderRadius: 10, marginBottom: 10 },
+  riskCardFull:        { marginBottom: 12 },
+  riskSeverity:        { fontSize: 11, fontWeight: 'bold', marginBottom: 4 },
+  riskMsg:             { fontSize: 13, color: colors.textPrimary, lineHeight: 19 },
+  viewAllLink:         { color: colors.primary, fontSize: 13, fontWeight: '600', textAlign: 'center', marginTop: 4 },
+  vitalHeader:         { flexDirection: 'row', alignItems: 'center', marginBottom: 10 },
+  vitalLabel:          { fontSize: 14, fontWeight: 'bold', color: colors.textPrimary, flex: 1 },
+  vitalCountBadge:     { backgroundColor: '#e8f4ff', paddingHorizontal: 10, paddingVertical: 3, borderRadius: 12 },
+  vitalCountText:      { fontSize: 11, color: colors.primary, fontWeight: '600' },
+  vitalStats:          { flexDirection: 'row', justifyContent: 'space-around', backgroundColor: colors.background, borderRadius: 10, padding: 12 },
+  vitalStat:           { alignItems: 'center' },
+  vitalStatLabel:      { fontSize: 11, color: colors.textSecondary, marginBottom: 4 },
+  vitalStatVal:        { fontSize: 15, fontWeight: 'bold', color: colors.textPrimary },
+  activityRow:         { flexDirection: 'row', alignItems: 'center', paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: colors.border },
+  activityBadge:       { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12 },
+  modalOverlay:        { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
+  modalBox:            { backgroundColor: '#fff', borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20, maxHeight: 400 },
+  modalTitle:          { fontSize: 16, fontWeight: 'bold', color: colors.textPrimary, marginBottom: 16, textAlign: 'center' },
+  pickerRow:           { flexDirection: 'row', height: 200, gap: 8 },
+  pickerCol:           { flex: 1 },
+  pickerItem:          { paddingVertical: 10, alignItems: 'center', borderRadius: 8 },
   pickerItemActive:     { backgroundColor: colors.primary },
   pickerItemText:       { fontSize: 14, color: colors.textPrimary },
   pickerItemActiveText: { color: '#fff', fontWeight: 'bold' },
-  modalDoneBtn:     { marginTop: 16, backgroundColor: colors.primary, borderRadius: 12, paddingVertical: 12, alignItems: 'center' },
-  modalDoneBtnText: { fontSize: 15, fontWeight: 'bold', color: '#fff' },
+  modalDoneBtn:         { marginTop: 16, backgroundColor: colors.primary, borderRadius: 12, paddingVertical: 12, alignItems: 'center' },
+  modalDoneBtnText:     { fontSize: 15, fontWeight: 'bold', color: '#fff' },
 });
 
 export default ReportScreen;
