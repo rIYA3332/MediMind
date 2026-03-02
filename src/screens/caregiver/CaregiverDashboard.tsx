@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
-  RefreshControl, ActivityIndicator, ViewStyle
+  RefreshControl, ActivityIndicator, ViewStyle, Alert
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -46,6 +46,18 @@ const CaregiverDashboard = ({ navigation }: any) => {
   const [unreadCount, setUnreadCount] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
   const [loading, setLoading] = useState(true);
+
+  const handleLogout = useCallback(() => {
+    Alert.alert('Logout', 'Are you sure you want to logout?', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Logout', style: 'destructive', onPress: async () => {
+          await AsyncStorage.removeItem('user');
+          navigation.reset({ index: 0, routes: [{ name: 'Login' }] });
+        },
+      },
+    ]);
+  }, [navigation]);
 
   const loadData = useCallback(async (caregiverId: number) => {
     try {
@@ -110,10 +122,15 @@ const CaregiverDashboard = ({ navigation }: any) => {
             <Text style={styles.greeting}>Caregiver Dashboard</Text>
             <Text style={styles.name}>{caregiver?.name || 'Caregiver'}</Text>
           </View>
-          <TouchableOpacity style={styles.alertBtn} onPress={() => navigation.navigate('Alerts')}>
-            <Text style={styles.alertIcon}>🔔</Text>
-            {unreadCount > 0 && <View style={styles.badge}><Text style={styles.badgeText}>{unreadCount > 99 ? '99+' : unreadCount}</Text></View>}
-          </TouchableOpacity>
+          <View style={styles.headerRight}>
+            <TouchableOpacity style={styles.alertBtn} onPress={() => navigation.navigate('Alerts')}>
+              <Text style={styles.alertIcon}>🔔</Text>
+              {unreadCount > 0 && <View style={styles.badge}><Text style={styles.badgeText}>{unreadCount > 99 ? '99+' : unreadCount}</Text></View>}
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.logoutBtn} onPress={handleLogout}>
+              <Text style={styles.logoutBtnText}>Logout</Text>
+            </TouchableOpacity>
+          </View>
         </View>
 
         <View style={styles.statsBar}>
@@ -246,10 +263,13 @@ const styles = StyleSheet.create({
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 20, paddingBottom: 15, backgroundColor: colors.white, borderBottomWidth: 1, borderBottomColor: colors.border },
   greeting: { fontSize: 12, color: colors.textSecondary, textTransform: 'uppercase', letterSpacing: 0.5 },
   name: { fontSize: 22, fontWeight: 'bold', color: colors.primary, marginTop: 2 },
+  headerRight: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   alertBtn: { position: 'relative', padding: 8 },
   alertIcon: { fontSize: 26 },
   badge: { position: 'absolute', top: 2, right: 2, backgroundColor: '#ff4757', borderRadius: 10, paddingHorizontal: 5, paddingVertical: 1, minWidth: 18, alignItems: 'center' },
   badgeText: { color: '#fff', fontSize: 10, fontWeight: 'bold' },
+  logoutBtn: { paddingHorizontal: 12, paddingVertical: 7, borderRadius: 8, borderWidth: 1, borderColor: '#ff7675' },
+  logoutBtnText: { fontSize: 12, fontWeight: '700', color: '#ff7675' },
   statsBar: { flexDirection: 'row', backgroundColor: colors.white, paddingVertical: 14, paddingHorizontal: 20, marginBottom: 4, borderBottomWidth: 1, borderBottomColor: colors.border },
   statItem: { flex: 1, alignItems: 'center' },
   statDivider: { width: 1, backgroundColor: colors.border },

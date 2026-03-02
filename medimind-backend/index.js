@@ -467,32 +467,66 @@ app.post('/api/push-token', (req, res) => {
 // MEDICATIONS
 // =============================================================================
 app.post('/api/medications', (req, res) => {
-  const { elderId, name, dosage, frequency, time, notes } = req.body;
+  const { elderId, name, type, dosage, frequency, time, notes, date, recurrence, end_date } = req.body;
+
+  if (!name || !type) return res.status(400).json({ message: 'Name and type are required' });
+
+  // Only require dosage/frequency for medicine
+  if (type === 'medicine' && (!dosage || !frequency)) {
+    return res.status(400).json({ message: 'Dosage and frequency required for medicine' });
+  }
+
   db.query(
-    `INSERT INTO medications (user_id,name,dosage,frequency,time,notes) VALUES (?,?,?,?,?,?)`,
-    [elderId, name, dosage||null, frequency||null, time, notes||null],
+    `INSERT INTO medications (user_id, name, type, dosage, frequency, time, notes, date, recurrence, end_date)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [elderId, name, type, dosage || null, frequency || null, time || null, notes || null, date || null, recurrence || 'none', end_date || null],
     (err, result) => {
-      if (err) return res.status(400).json({ message:'Failed to add medication' });
-      db.query(`INSERT INTO medication_reminder (medication_id,reminder_time,is_active) VALUES (?,?,true)`,[result.insertId,time],()=>{});
-      res.json({ message:'Medication added successfully', medicationId:result.insertId });
+      if (err) return res.status(400).json({ message:'Failed to add schedule: '+err.message });
+
+      // Add to reminder table if time is provided (for all types that can have reminders)
+      if (time) {
+        db.query(
+          `INSERT INTO medication_reminder (medication_id, reminder_time, is_active)
+           VALUES (?, ?, true)`,
+          [result.insertId, time],
+          () => {}
+        );
+      }
+
+      res.json({ message: 'Schedule added successfully', scheduleId: result.insertId });
     }
   );
 });
 
 app.get('/api/medications/:userId', (req, res) => {
-  db.query('SELECT * FROM medications WHERE user_id=? ORDER BY time',[req.params.userId],(err,results)=>{
-    if (err) return res.status(500).json({ message:'Error' });
-    res.json((results||[]).filter(m=>!parseMeta(m.notes)));
+  db.query('SELECT * FROM medications WHERE user_id=? ORDER BY time', [req.params.userId], (err, results) => {
+    if (err) return res.status(500).json({ message:'Error fetching schedules' });
+
+    res.json(results || []);
   });
 });
 
 app.put('/api/medications/:id', (req, res) => {
-  const { name, dosage, frequency, time, notes } = req.body;
-  db.query(`UPDATE medications SET name=?,dosage=?,frequency=?,time=?,notes=? WHERE id=?`,[name,dosage||null,frequency||null,time,notes||null,req.params.id],(err)=>{
-    if (err) return res.status(400).json({ message:'Failed to update' });
-    db.query(`UPDATE medication_reminder SET reminder_time=? WHERE medication_id=?`,[time,req.params.id],()=>{});
-    res.json({ message:'Medication updated' });
-  });
+  const { name, type, dosage, frequency, time, notes, date, recurrence, end_date } = req.body;
+
+  // Only enforce medicine requirements
+  if (type === 'medicine' && (!dosage || !frequency)) {
+    return res.status(400).json({ message: 'Dosage and frequency required for medicine' });
+  }
+
+  db.query(
+    `UPDATE medications SET name=?, type=?, dosage=?, frequency=?, time=?, notes=?, date=?, recurrence=?, end_date=? WHERE id=?`,
+    [name, type, dosage || null, frequency || null, time || null, notes || null, date || null, recurrence || 'none', end_date || null, req.params.id],
+    (err) => {
+      if (err) return res.status(400).json({ message:'Failed to update schedule' });
+
+      if (time) {
+        db.query(`UPDATE medication_reminder SET reminder_time=? WHERE medication_id=?`, [time, req.params.id], ()=>{});
+      }
+
+      res.json({ message:'Schedule updated' });
+    }
+  );
 });
 
 app.delete('/api/medications/:id', (req, res) => {
@@ -1087,6 +1121,98 @@ app.get('/api/schedules/today-summary/:elderId', (req, res) => {
       const overdue = schedRows.filter(r=>r.is_overdue).length;
       const pending = total-done-skipped-overdue;
       res.json({ total, done, skipped, overdue, pending });
+    }
+  );
+});
+// new
+// =============================================================================
+// MEDICATION ACTIVITY FEED
+// =============================================================================
+
+app.get('/api/medication-activity/:elderId', (req, res) => {
+  const { elderId } = req.params;
+  const days = parseInt(req.query.days) || 7;
+  db.query(
+    `SELECT
+       'intake' AS source, mi.id, mi.medication_id,
+       mi.user_id AS elder_id,
+       mi.status, mi.is_overdue,
+       mi.notes AS response_note,
+       mi.taken_at AS event_time,
+       m.name AS title, m.frequency AS type,
+       m.time AS scheduled_time, m.dosage,
+       NULL AS attempt_number
+     FROM medication_intake mi
+     JOIN medications m ON mi.medication_id = m.id
+     WHERE mi.user_id = ?
+       AND mi.taken_at >= DATE_SUB(NOW(), INTERVAL ? DAY)
+
+     UNION ALL
+
+     SELECT
+       'reminder' AS source, rl.id, rl.medication_id,
+       rl.user_id AS elder_id,
+       rl.status, 0 AS is_overdue,
+       NULL AS response_note,
+       rl.sent_at AS event_time,
+       m.name AS title, m.frequency AS type,
+       m.time AS scheduled_time, m.dosage,
+       rl.attempt_number
+     FROM reminder_logs rl
+     JOIN medications m ON rl.medication_id = m.id
+     WHERE rl.user_id = ?
+       AND rl.sent_at >= DATE_SUB(NOW(), INTERVAL ? DAY)
+
+     ORDER BY event_time DESC LIMIT 100`,
+    [elderId, days, elderId, days],
+    (err, results) => {
+      if (err) return res.status(500).json({ message: 'Error: ' + err.message });
+      res.json(results || []);
+    }
+  );
+});
+
+app.get('/api/medication-activity/caregiver/:caregiverId', (req, res) => {
+  const { caregiverId } = req.params;
+  const days = parseInt(req.query.days) || 7;
+  db.query(
+    `SELECT
+       'intake' AS source, mi.id, mi.medication_id,
+       mi.user_id AS elder_id, u.name AS elder_name,
+       mi.status, mi.is_overdue,
+       mi.notes AS response_note,
+       mi.taken_at AS event_time,
+       m.name AS title, m.frequency AS type,
+       m.time AS scheduled_time, m.dosage,
+       NULL AS attempt_number
+     FROM medication_intake mi
+     JOIN medications m ON mi.medication_id = m.id
+     JOIN users u ON mi.user_id = u.id
+     JOIN connections c ON c.elder_id = u.id AND c.requester_id = ? AND c.status = 'approved'
+     WHERE mi.taken_at >= DATE_SUB(NOW(), INTERVAL ? DAY)
+
+     UNION ALL
+
+     SELECT
+       'reminder' AS source, rl.id, rl.medication_id,
+       rl.user_id AS elder_id, u.name AS elder_name,
+       rl.status, 0 AS is_overdue,
+       NULL AS response_note,
+       rl.sent_at AS event_time,
+       m.name AS title, m.frequency AS type,
+       m.time AS scheduled_time, m.dosage,
+       rl.attempt_number
+     FROM reminder_logs rl
+     JOIN medications m ON rl.medication_id = m.id
+     JOIN users u ON rl.user_id = u.id
+     JOIN connections c ON c.elder_id = u.id AND c.requester_id = ? AND c.status = 'approved'
+     WHERE rl.sent_at >= DATE_SUB(NOW(), INTERVAL ? DAY)
+
+     ORDER BY event_time DESC LIMIT 200`,
+    [caregiverId, days, caregiverId, days],
+    (err, results) => {
+      if (err) return res.status(500).json({ message: 'Error: ' + err.message });
+      res.json(results || []);
     }
   );
 });
