@@ -28,14 +28,14 @@ import { RootStackParamList } from './AppNavigator';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'CaregiverApp'>;
 
-// ── Tab param list ─────────────────────────────────────────────────────────────
+// ── Tab param list 
 export type CaregiverTabParamList = {
   Home:    { user: any };
   Monitor: { elderId?: number; elderName?: string };
   Alerts:  undefined;
 };
 
-// ── Stack param list (tab screens + modal screens) ─────────────────────────────
+// ── Stack param list (tab screens + modal screens) 
 export type CaregiverStackParamList = {
   CaregiverTabs:  undefined;
   HealthStatus:   { elderId: number; elderName: string };
@@ -46,7 +46,7 @@ export type CaregiverStackParamList = {
 const Tab   = createBottomTabNavigator<CaregiverTabParamList>();
 const Stack = createNativeStackNavigator<CaregiverStackParamList>();
 
-// ── Inner Tab Navigator ────────────────────────────────────────────────────────
+// ── Inner Tab Navigator 
 const CaregiverTabs: React.FC = () => (
   <Tab.Navigator
     screenOptions={{
@@ -75,7 +75,7 @@ const CaregiverTabs: React.FC = () => (
   </Tab.Navigator>
 );
 
-// ── Outer Stack Navigator ──────────────────────────────────────────────────────
+//  Outer Stack Navigator 
 const CaregiverNavigator: React.FC<Props> = ({ route }) => {
   const { user } = route.params;
 
@@ -89,7 +89,6 @@ const CaregiverNavigator: React.FC<Props> = ({ route }) => {
     <Stack.Navigator screenOptions={{ headerShown: false }}>
       <Stack.Screen name="CaregiverTabs" component={CaregiverTabs} />
       <Stack.Screen name="HealthStatus"  component={HealthStatusScreen} />
-      {/* Both "WeeklyReport" and "Report" resolve to the same screen */}
       <Stack.Screen name="WeeklyReport"  component={ReportScreen} />
       <Stack.Screen name="Report"        component={ReportScreen} />
     </Stack.Navigator>
