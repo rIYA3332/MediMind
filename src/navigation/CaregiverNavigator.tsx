@@ -20,7 +20,9 @@ type Props = NativeStackScreenProps<RootStackParamList, 'CaregiverApp'>;
 
 export type CaregiverTabParamList = {
   Home:     { user: any };
-  Monitor:  { elderId?: number; elderName?: string };
+  // caregiverId is passed as initialParams so MonitorHealthScreen
+  // always knows which caregiver it belongs to, even as a tab screen
+  Monitor:  { caregiverId?: number; elderId?: number; elderName?: string };
   Schedule: undefined;
   Alerts:   undefined;
 };
@@ -35,37 +37,80 @@ export type CaregiverStackParamList = {
 const Tab   = createBottomTabNavigator<CaregiverTabParamList>();
 const Stack = createNativeStackNavigator<CaregiverStackParamList>();
 
-const CaregiverTabs: React.FC = () => (
+// CaregiverTabs receives caregiverId so it can pass it as initialParams
+// to the Monitor tab. Without this, MonitorHealthScreen gets no params
+// when opened via the tab bar and shows nothing.
+const CaregiverTabs: React.FC<{ caregiverId: number }> = ({ caregiverId }) => (
   <Tab.Navigator
     screenOptions={{
-      headerShown: false,
+      headerShown:           false,
       tabBarActiveTintColor:   colors.primary,
       tabBarInactiveTintColor: colors.textSecondary,
       tabBarStyle:      { height: 62, paddingBottom: 8, paddingTop: 6 },
       tabBarLabelStyle: { fontSize: 11, fontWeight: '600' },
     }}>
-    <Tab.Screen name="Home"     component={CaregiverDashboard}
-      options={{ tabBarLabel:'Dashboard', tabBarIcon: ({color,size}) => <Icon name="home" color={color} size={size} /> }} />
-    <Tab.Screen name="Monitor"  component={MonitorHealthScreen}
-      options={{ tabBarLabel:'Monitor',   tabBarIcon: ({color,size}) => <Icon name="pulse" color={color} size={size} /> }} />
-    <Tab.Screen name="Schedule" component={ScheduleManagerScreen}
-      options={{ tabBarLabel:'Schedule',  tabBarIcon: ({color,size}) => <Icon name="calendar" color={color} size={size} /> }} />
-    <Tab.Screen name="Alerts"   component={AlertsScreen}
-      options={{ tabBarLabel:'Alerts',    tabBarIcon: ({color,size}) => <Icon name="notifications" color={color} size={size} /> }} />
+
+    <Tab.Screen
+      name="Home"
+      component={CaregiverDashboard}
+      options={{
+        tabBarLabel: 'Dashboard',
+        tabBarIcon: ({ color, size }) => <Icon name="home" color={color} size={size} />,
+      }}
+    />
+
+    <Tab.Screen
+      name="Monitor"
+      component={MonitorHealthScreen}
+      // initialParams ensures caregiverId is always available even when
+      // the screen is opened by tapping the tab (no navigation.navigate call)
+      initialParams={{ caregiverId }}
+      options={{
+        tabBarLabel: 'Monitor',
+        tabBarIcon: ({ color, size }) => <Icon name="pulse" color={color} size={size} />,
+      }}
+    />
+
+    <Tab.Screen
+      name="Schedule"
+      component={ScheduleManagerScreen}
+      options={{
+        tabBarLabel: 'Schedule',
+        tabBarIcon: ({ color, size }) => <Icon name="calendar" color={color} size={size} />,
+      }}
+    />
+
+    <Tab.Screen
+      name="Alerts"
+      component={AlertsScreen}
+      options={{
+        tabBarLabel: 'Alerts',
+        tabBarIcon: ({ color, size }) => <Icon name="notifications" color={color} size={size} />,
+      }}
+    />
   </Tab.Navigator>
 );
 
 const CaregiverNavigator: React.FC<Props> = ({ route }) => {
   const { user } = route.params;
+
   useEffect(() => {
     if (user) AsyncStorage.setItem('user', JSON.stringify(user)).catch(() => {});
   }, [user]);
+
   return (
     <Stack.Navigator screenOptions={{ headerShown: false }}>
-      <Stack.Screen name="CaregiverTabs" component={CaregiverTabs} />
-      <Stack.Screen name="HealthStatus"  component={HealthStatusScreen} />
-      <Stack.Screen name="WeeklyReport"  component={ReportScreen} />
-      <Stack.Screen name="Report"        component={ReportScreen} />
+      {/*
+        Use children prop so we can pass caregiverId into CaregiverTabs.
+        Standard component prop doesn't allow custom props.
+      */}
+      <Stack.Screen
+        name="CaregiverTabs"
+        children={() => <CaregiverTabs caregiverId={Number(user.id)} />}
+      />
+      <Stack.Screen name="HealthStatus" component={HealthStatusScreen} />
+      <Stack.Screen name="WeeklyReport" component={ReportScreen} />
+      <Stack.Screen name="Report"       component={ReportScreen} />
     </Stack.Navigator>
   );
 };

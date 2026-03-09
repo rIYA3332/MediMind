@@ -21,6 +21,16 @@ interface ElderSummary {
   activeRisksCount: number; unreadAlertsCount: number;
 }
 
+// ── Added: shape of one overdue row returned by /api/overdue/caregiver/:id ──
+interface OverdueItem {
+  id: number;
+  title: string;
+  type: string;
+  scheduled_time: string;
+  elder_name: string;
+  elder_id: number;
+}
+
 const moodEmojis: Record<string, string> = { happy: '😊', neutral: '😐', sad: '😢', anxious: '😰', tired: '😴', lonely: '🪑' };
 const healthIcons: Record<string, string> = { blood_pressure: '💉', blood_sugar: '🩸', weight: '⚖️', temperature: '🌡️', heart_rate: '❤️' };
 
@@ -44,6 +54,8 @@ const CaregiverDashboard = ({ navigation }: any) => {
   const [elders, setElders] = useState<Elder[]>([]);
   const [summaries, setSummaries] = useState<Record<number, ElderSummary>>({});
   const [unreadCount, setUnreadCount] = useState(0);
+  // ── NEW: real-time overdue medication count for today ─────────────────────
+  const [overdueItems, setOverdueItems] = useState<OverdueItem[]>([]);
   const [refreshing, setRefreshing] = useState(false);
   const [loading, setLoading] = useState(true);
 
@@ -69,6 +81,16 @@ const CaregiverDashboard = ({ navigation }: any) => {
       const alertRes = await fetch(getApiUrl(`/api/alerts/caregiver/${caregiverId}`));
       const alertJson = await alertRes.json();
       setUnreadCount(Array.isArray(alertJson) ? alertJson.length : 0);
+
+      // ── NEW: fetch today's overdue medications for all connected elders ────
+      try {
+        const overdueRes = await fetch(getApiUrl(`/api/overdue/caregiver/${caregiverId}`));
+        const overdueJson = await overdueRes.json();
+        setOverdueItems(Array.isArray(overdueJson) ? overdueJson : []);
+      } catch (e) {
+        console.log('Overdue fetch error:', e);
+        setOverdueItems([]);
+      }
 
       if (elderList.length > 0) {
         const summaryEntries = await Promise.all(
@@ -113,6 +135,7 @@ const CaregiverDashboard = ({ navigation }: any) => {
   };
 
   const totalRisks = Object.values(summaries).reduce((a, s) => a + (s?.activeRisksCount || 0), 0);
+  const overdueCount = overdueItems.length;
 
   return (
     <SafeAreaView style={styles.container}>
@@ -133,13 +156,62 @@ const CaregiverDashboard = ({ navigation }: any) => {
           </View>
         </View>
 
+        {/* ── Stats bar — now includes Overdue Doses ───────────────────────── */}
         <View style={styles.statsBar}>
-          <View style={styles.statItem}><Text style={styles.statNumber}>{elders.length}</Text><Text style={styles.statLabel}>Elders</Text></View>
+          <View style={styles.statItem}>
+            <Text style={styles.statNumber}>{elders.length}</Text>
+            <Text style={styles.statLabel}>Elders</Text>
+          </View>
           <View style={styles.statDivider} />
-          <View style={styles.statItem}><Text style={[styles.statNumber, unreadCount > 0 ? { color: '#ff7675' } : {}]}>{unreadCount}</Text><Text style={styles.statLabel}>Unread Alerts</Text></View>
+          <View style={styles.statItem}>
+            <Text style={[styles.statNumber, unreadCount > 0 ? { color: '#ff7675' } : {}]}>{unreadCount}</Text>
+            <Text style={styles.statLabel}>Unread Alerts</Text>
+          </View>
           <View style={styles.statDivider} />
-          <View style={styles.statItem}><Text style={[styles.statNumber, totalRisks > 0 ? { color: '#e17055' } : { color: '#00b894' }]}>{totalRisks}</Text><Text style={styles.statLabel}>Active Risks</Text></View>
+          <View style={styles.statItem}>
+            <Text style={[styles.statNumber, totalRisks > 0 ? { color: '#e17055' } : { color: '#00b894' }]}>{totalRisks}</Text>
+            <Text style={styles.statLabel}>Active Risks</Text>
+          </View>
+          <View style={styles.statDivider} />
+          {/* ── NEW: Overdue Doses stat ─────────────────────────────────────── */}
+          <TouchableOpacity
+            style={styles.statItem}
+            onPress={() => overdueCount > 0 && navigation.navigate('Alerts')}
+          >
+            <Text style={[styles.statNumber, overdueCount > 0 ? { color: '#c0392b' } : { color: '#00b894' }]}>
+              {overdueCount}
+            </Text>
+            <Text style={[styles.statLabel, overdueCount > 0 && { color: '#c0392b' }]}>
+              {overdueCount > 0 ? '⚠️ Overdue' : 'Overdue'}
+            </Text>
+          </TouchableOpacity>
         </View>
+
+        {/* ── NEW: Missed Dose Alert Banner ────────────────────────────────── */}
+        {overdueCount > 0 && (
+          <TouchableOpacity
+            style={styles.overdueBanner}
+            activeOpacity={0.85}
+            onPress={() => navigation.navigate('Alerts')}
+          >
+            <View style={styles.overdueBannerLeft}>
+              <Text style={styles.overdueBannerIcon}>🚨</Text>
+              <View>
+                <Text style={styles.overdueBannerTitle}>
+                  {overdueCount} Missed Dose{overdueCount !== 1 ? 's' : ''} Today
+                </Text>
+                <Text style={styles.overdueBannerSubtitle}>
+                  {/* Show up to 2 elder names */}
+                  {[...new Set(overdueItems.map(o => o.elder_name))].slice(0, 2).join(', ')}
+                  {[...new Set(overdueItems.map(o => o.elder_name))].length > 2
+                    ? ` +${[...new Set(overdueItems.map(o => o.elder_name))].length - 2} more`
+                    : ''}
+                </Text>
+              </View>
+            </View>
+            <Text style={styles.overdueBannerArrow}>View Alerts →</Text>
+          </TouchableOpacity>
+        )}
 
         <Text style={styles.sectionTitle}>Monitoring</Text>
 
@@ -157,12 +229,15 @@ const CaregiverDashboard = ({ navigation }: any) => {
             const risksCount = s?.activeRisksCount || 0;
             const isCritical = risksCount >= 2;
             const hasRisk = risksCount > 0;
+            // ── NEW: per-elder overdue count for the card ─────────────────────
+            const elderOverdueCount = overdueItems.filter(o => o.elder_id === elder.id).length;
             const overallStatus = getOverallStatus(s);
             const medStatus = getMedStatus(s?.todayMedsTaken || 0, s?.todayMedsTotal || 0);
             const lastUpdated = formatLastUpdated(s?.latestVitals || []);
             const cardStyle: ViewStyle[] = [styles.elderCard];
-            if (isCritical) cardStyle.push(styles.elderCardCritical);
-            else if (hasRisk) cardStyle.push(styles.elderCardRisk);
+            if (elderOverdueCount > 0) cardStyle.push(styles.elderCardOverdue);
+            else if (isCritical)       cardStyle.push(styles.elderCardCritical);
+            else if (hasRisk)          cardStyle.push(styles.elderCardRisk);
 
             return (
               <Card key={elder.id} style={cardStyle}>
@@ -170,13 +245,33 @@ const CaregiverDashboard = ({ navigation }: any) => {
                   <View style={styles.elderTitleRow}>
                     <View>
                       <Text style={styles.monitoringLabel}>Monitoring</Text>
-                      <Text style={styles.elderName}>{elder.name}{elder.relationship ? ` (${elder.relationship})` : ''}</Text>
+                      <View style={styles.elderNameRow}>
+                        <Text style={styles.elderName}>{elder.name}{elder.relationship ? ` (${elder.relationship})` : ''}</Text>
+                        {/* ── NEW: per-elder overdue badge on name row ─────── */}
+                        {elderOverdueCount > 0 && (
+                          <View style={styles.elderOverdueBadge}>
+                            <Text style={styles.elderOverdueBadgeText}>🚨 {elderOverdueCount} missed</Text>
+                          </View>
+                        )}
+                      </View>
                     </View>
                     <TouchableOpacity style={styles.menuBtn} onPress={() => navigation.navigate('HealthStatus', { elderId: elder.id, elderName: elder.name })}>
                       <Text style={styles.menuIcon}>☰</Text>
                     </TouchableOpacity>
                   </View>
                 </View>
+
+                {/* ── NEW: per-elder missed doses inline list ──────────────── */}
+                {elderOverdueCount > 0 && (
+                  <View style={styles.elderOverdueBox}>
+                    <Text style={styles.elderOverdueBoxTitle}>🚨 Missed doses today</Text>
+                    {overdueItems.filter(o => o.elder_id === elder.id).map(item => (
+                      <Text key={item.id} style={styles.elderOverdueItem}>
+                        • {item.title}{item.scheduled_time ? ` — scheduled ${item.scheduled_time.slice(0, 5)}` : ''}
+                      </Text>
+                    ))}
+                  </View>
+                )}
 
                 <View style={[styles.statusBanner, { borderColor: overallStatus.color, backgroundColor: overallStatus.color + '18' }]}>
                   <Text style={[styles.statusBannerText, { color: overallStatus.color }]}>{overallStatus.icon} Overall Status: {overallStatus.label}</Text>
@@ -270,11 +365,37 @@ const styles = StyleSheet.create({
   badgeText: { color: '#fff', fontSize: 10, fontWeight: 'bold' },
   logoutBtn: { paddingHorizontal: 12, paddingVertical: 7, borderRadius: 8, borderWidth: 1, borderColor: '#ff7675' },
   logoutBtnText: { fontSize: 12, fontWeight: '700', color: '#ff7675' },
-  statsBar: { flexDirection: 'row', backgroundColor: colors.white, paddingVertical: 14, paddingHorizontal: 20, marginBottom: 4, borderBottomWidth: 1, borderBottomColor: colors.border },
+
+  // ── Stats bar — 4 items now ──────────────────────────────────────────────
+  statsBar: { flexDirection: 'row', backgroundColor: colors.white, paddingVertical: 14, paddingHorizontal: 12, marginBottom: 4, borderBottomWidth: 1, borderBottomColor: colors.border },
   statItem: { flex: 1, alignItems: 'center' },
   statDivider: { width: 1, backgroundColor: colors.border },
-  statNumber: { fontSize: 22, fontWeight: 'bold', color: colors.primary },
-  statLabel: { fontSize: 11, color: colors.textSecondary, marginTop: 2, textAlign: 'center' },
+  statNumber: { fontSize: 20, fontWeight: 'bold', color: colors.primary },
+  statLabel: { fontSize: 10, color: colors.textSecondary, marginTop: 2, textAlign: 'center' },
+
+  // ── Missed Dose Banner ────────────────────────────────────────────────────
+  overdueBanner: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    backgroundColor: '#c0392b',
+    marginHorizontal: 16,
+    marginTop: 12,
+    marginBottom: 4,
+    borderRadius: 12,
+    padding: 14,
+    elevation: 3,
+    shadowColor: '#c0392b',
+    shadowOpacity: 0.3,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 3 },
+  },
+  overdueBannerLeft: { flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 },
+  overdueBannerIcon: { fontSize: 28 },
+  overdueBannerTitle: { fontSize: 15, fontWeight: '800', color: '#fff' },
+  overdueBannerSubtitle: { fontSize: 12, color: 'rgba(255,255,255,0.85)', marginTop: 2 },
+  overdueBannerArrow: { fontSize: 12, color: '#fff', fontWeight: '800' },
+
   sectionTitle: { fontSize: 13, fontWeight: '700', color: colors.textSecondary, marginHorizontal: 20, marginTop: 14, marginBottom: 10, textTransform: 'uppercase', letterSpacing: 0.5 },
   loadingContainer: { alignItems: 'center', paddingVertical: 60 },
   loadingText: { marginTop: 12, color: colors.textSecondary, fontSize: 14 },
@@ -282,13 +403,26 @@ const styles = StyleSheet.create({
   emptyIcon: { fontSize: 60, marginBottom: 16 },
   emptyTitle: { fontSize: 18, fontWeight: 'bold', color: colors.textPrimary, marginBottom: 8 },
   emptyText: { fontSize: 13, color: colors.textSecondary, textAlign: 'center', lineHeight: 20 },
+
   elderCard: { marginHorizontal: 20, marginBottom: 16, padding: 16 },
   elderCardRisk: { borderWidth: 1, borderColor: '#fdcb6e' },
   elderCardCritical: { borderWidth: 1, borderColor: '#ff4757' },
+  // ── NEW: overdue border takes priority over risk/critical ─────────────────
+  elderCardOverdue: { borderWidth: 2, borderColor: '#c0392b' },
+
   elderHeader: { marginBottom: 12 },
   elderTitleRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
   monitoringLabel: { fontSize: 11, color: colors.textSecondary, textTransform: 'uppercase', letterSpacing: 0.5 },
-  elderName: { fontSize: 18, fontWeight: 'bold', color: colors.textPrimary, marginTop: 2 },
+  elderNameRow: { flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginTop: 2 },
+  elderName: { fontSize: 18, fontWeight: 'bold', color: colors.textPrimary },
+  // ── NEW: per-elder missed badge beside the name ───────────────────────────
+  elderOverdueBadge: { backgroundColor: '#fff0f0', borderWidth: 1, borderColor: '#ffcccc', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 8 },
+  elderOverdueBadgeText: { fontSize: 11, color: '#c0392b', fontWeight: '800' },
+  // ── NEW: inline missed doses list ─────────────────────────────────────────
+  elderOverdueBox: { backgroundColor: '#fff5f5', borderRadius: 10, padding: 10, marginBottom: 10, borderWidth: 1, borderColor: '#ffcccc' },
+  elderOverdueBoxTitle: { fontSize: 12, fontWeight: '800', color: '#c0392b', marginBottom: 4 },
+  elderOverdueItem: { fontSize: 12, color: '#c0392b', marginTop: 2, lineHeight: 18 },
+
   menuBtn: { padding: 4 },
   menuIcon: { fontSize: 22, color: colors.textSecondary },
   statusBanner: { borderWidth: 1, borderRadius: 10, padding: 12, marginBottom: 14 },

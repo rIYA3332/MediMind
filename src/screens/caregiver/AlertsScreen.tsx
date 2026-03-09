@@ -19,7 +19,8 @@ interface Alert {
   priority: string;
 }
 
-const FILTERS = ['All', 'Vital', 'Mood', 'Health Log', 'Medication'];
+// ── Added 'Overdue' filter ──────────────────────────────────────────────────
+const FILTERS = ['All', 'Vital', 'Mood', 'Health Log', 'Medication', 'Overdue'];
 
 const AlertsScreen: React.FC = ({ navigation }: any) => {
   const [caregiverId, setCaregiverId] = useState<number | null>(null);
@@ -93,55 +94,81 @@ const AlertsScreen: React.FC = ({ navigation }: any) => {
     }
   };
 
+  // ── Updated: 'Medication' now catches all medication-related types;
+  //            'Overdue' catches missed-dose alerts specifically ──────────────
   const getFilteredAlerts = () => {
     const source = showHistory ? allAlerts : alerts;
     if (activeFilter === 'All') return source;
+    if (activeFilter === 'Overdue') {
+      return source.filter(a => a.alert_type === 'overdue');
+    }
+    if (activeFilter === 'Medication') {
+      return source.filter(a =>
+        ['medication', 'overdue', 'schedule_response', 'reminder_sent', 'schedule',
+         'daily_summary', 'adherence_alert'].includes(a.alert_type)
+      );
+    }
     const map: Record<string, string> = {
       'Vital': 'vital',
       'Mood': 'mood',
       'Health Log': 'health_log',
-      'Medication': 'medication',
     };
     return source.filter(a => a.alert_type === map[activeFilter]);
   };
 
+  // ── Updated: all alert_types that arrive from the server are now handled ──
   const getAlertIcon = (type?: string) => {
     switch (type) {
-      case 'vital': return '⚠️';
-      case 'mood': return '😊';
-      case 'health_log': return '📊';
-      case 'medication': return '💊';
-      case 'emergency': return '🚨';
-      default: return '🔔';
+      case 'vital':            return '⚠️';
+      case 'mood':             return '😊';
+      case 'health_log':       return '📊';
+      case 'medication':       return '💊';
+      case 'emergency':        return '🚨';
+      // Missed-dose / schedule types
+      case 'overdue':          return '🚨';
+      case 'schedule_response':return '💊';
+      case 'reminder_sent':    return '🔔';
+      case 'schedule':         return '📅';
+      case 'daily_summary':    return '📊';
+      case 'adherence_alert':  return '📉';
+      default:                 return '🔔';
     }
   };
 
   const getPriorityStyle = (priority: string) => {
     switch (priority) {
       case 'critical': return { borderColor: '#ff4757', bg: '#fff5f5' };
-      case 'high': return { borderColor: '#ff7675', bg: '#fff9f9' };
-      case 'medium': return { borderColor: '#fdcb6e', bg: '#fffdf5' };
-      default: return { borderColor: '#74b9ff', bg: '#f5f9ff' };
+      case 'high':     return { borderColor: '#ff7675', bg: '#fff9f9' };
+      case 'medium':   return { borderColor: '#fdcb6e', bg: '#fffdf5' };
+      default:         return { borderColor: '#74b9ff', bg: '#f5f9ff' };
     }
   };
 
   const getPriorityLabel = (priority: string) => {
     switch (priority) {
       case 'critical': return { label: '🚨 CRITICAL', color: '#ff4757' };
-      case 'high': return { label: '⚠️ HIGH', color: '#e17055' };
-      case 'medium': return { label: '📌 MEDIUM', color: '#fdcb6e' };
-      default: return { label: '💬 INFO', color: '#74b9ff' };
+      case 'high':     return { label: '⚠️ HIGH',     color: '#e17055' };
+      case 'medium':   return { label: '📌 MEDIUM',   color: '#fdcb6e' };
+      default:         return { label: '💬 INFO',      color: '#74b9ff' };
     }
   };
 
+  // ── Updated: human-readable labels for all server-emitted alert types ─────
   const getAlertTypeLabel = (type?: string) => {
     switch (type) {
-      case 'vital': return 'Vital Signs Alert';
-      case 'mood': return 'Mood Update';
-      case 'health_log': return 'Health Log';
-      case 'medication': return 'Medication';
-      case 'emergency': return 'Emergency';
-      default: return 'Notification';
+      case 'vital':             return 'Vital Signs Alert';
+      case 'mood':              return 'Mood Update';
+      case 'health_log':        return 'Health Log';
+      case 'medication':        return 'Medication';
+      case 'emergency':         return 'Emergency';
+      // Missed-dose / schedule types
+      case 'overdue':           return '🚨 Missed Dose';
+      case 'schedule_response': return 'Dose Response';
+      case 'reminder_sent':     return 'Reminder Sent';
+      case 'schedule':          return 'Schedule Update';
+      case 'daily_summary':     return 'Daily Summary';
+      case 'adherence_alert':   return 'Adherence Alert';
+      default:                  return 'Notification';
     }
   };
 
@@ -158,6 +185,11 @@ const AlertsScreen: React.FC = ({ navigation }: any) => {
   };
 
   const filtered = getFilteredAlerts();
+
+  // ── Count of unread overdue alerts for the 'Overdue' chip badge ──────────
+  const overdueUnread = (showHistory ? allAlerts : alerts).filter(
+    a => a.alert_type === 'overdue'
+  ).length;
 
   return (
     <SafeAreaView style={styles.container}>
@@ -186,17 +218,48 @@ const AlertsScreen: React.FC = ({ navigation }: any) => {
         </View>
       </View>
 
+      {/* ── Missed-dose urgent banner (shown when overdue alerts exist) ─────── */}
+      {!showHistory && overdueUnread > 0 && (
+        <View style={styles.missingDoseBanner}>
+          <Text style={styles.missingDoseBannerText}>
+            🚨 {overdueUnread} missed dose alert{overdueUnread !== 1 ? 's' : ''} require your attention
+          </Text>
+          <TouchableOpacity onPress={() => setActiveFilter('Overdue')}>
+            <Text style={styles.missingDoseBannerAction}>View →</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
       {/* Filter Chips */}
       <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.filterBar}>
-        {FILTERS.map(f => (
-          <TouchableOpacity
-            key={f}
-            style={[styles.filterChip, activeFilter === f && styles.filterChipActive]}
-            onPress={() => setActiveFilter(f)}
-          >
-            <Text style={[styles.filterChipText, activeFilter === f && { color: colors.white }]}>{f}</Text>
-          </TouchableOpacity>
-        ))}
+        {FILTERS.map(f => {
+          // Show badge count on 'Overdue' chip
+          const chipCount = f === 'Overdue' ? overdueUnread : 0;
+          return (
+            <TouchableOpacity
+              key={f}
+              style={[
+                styles.filterChip,
+                activeFilter === f && styles.filterChipActive,
+                f === 'Overdue' && overdueUnread > 0 && activeFilter !== f && styles.filterChipOverdue,
+              ]}
+              onPress={() => setActiveFilter(f)}
+            >
+              <Text style={[
+                styles.filterChipText,
+                activeFilter === f && { color: colors.white },
+                f === 'Overdue' && overdueUnread > 0 && activeFilter !== f && { color: '#c0392b' },
+              ]}>
+                {f}
+              </Text>
+              {chipCount > 0 && activeFilter !== f && (
+                <View style={styles.filterChipBadge}>
+                  <Text style={styles.filterChipBadgeText}>{chipCount}</Text>
+                </View>
+              )}
+            </TouchableOpacity>
+          );
+        })}
       </ScrollView>
 
       {loading ? (
@@ -218,6 +281,8 @@ const AlertsScreen: React.FC = ({ navigation }: any) => {
             filtered.map((alert) => {
               const priorityStyle = getPriorityStyle(alert.priority);
               const priorityLabel = getPriorityLabel(alert.priority);
+              // Overdue alerts get extra left-border emphasis
+              const isOverdueAlert = alert.alert_type === 'overdue';
               return (
                 <TouchableOpacity
                   key={alert.id}
@@ -226,15 +291,25 @@ const AlertsScreen: React.FC = ({ navigation }: any) => {
                 >
                   <View style={[
                     styles.alertCard,
-                    { borderLeftColor: priorityStyle.borderColor, backgroundColor: priorityStyle.bg }
+                    { borderLeftColor: isOverdueAlert ? '#c0392b' : priorityStyle.borderColor,
+                      backgroundColor: isOverdueAlert ? '#fff5f5' : priorityStyle.bg },
+                    isOverdueAlert && styles.alertCardOverdue,
                   ]}>
                     <View style={styles.alertTop}>
-                      <View style={styles.alertIconContainer}>
+                      <View style={[
+                        styles.alertIconContainer,
+                        isOverdueAlert && { backgroundColor: '#ffe0e0' },
+                      ]}>
                         <Text style={styles.alertIcon}>{getAlertIcon(alert.alert_type)}</Text>
                       </View>
                       <View style={styles.alertMeta}>
                         <View style={styles.alertMetaRow}>
-                          <Text style={styles.alertType}>{getAlertTypeLabel(alert.alert_type)}</Text>
+                          <Text style={[
+                            styles.alertType,
+                            isOverdueAlert && { color: '#c0392b' },
+                          ]}>
+                            {getAlertTypeLabel(alert.alert_type)}
+                          </Text>
                           <Text style={[styles.priorityTag, { color: priorityLabel.color }]}>
                             {priorityLabel.label}
                           </Text>
@@ -302,6 +377,19 @@ const styles = StyleSheet.create({
   },
   historyBtnActive: { backgroundColor: colors.primary },
   historyBtnText: { fontSize: 12, color: colors.primary, fontWeight: '600' },
+
+  // ── Missed-dose banner ─────────────────────────────────────────────────────
+  missingDoseBanner: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    backgroundColor: '#c0392b',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+  },
+  missingDoseBannerText: { fontSize: 13, color: '#fff', fontWeight: '700', flex: 1 },
+  missingDoseBannerAction: { fontSize: 13, color: '#fff', fontWeight: '800', marginLeft: 8 },
+
   filterBar: {
     backgroundColor: colors.white,
     paddingHorizontal: 15,
@@ -311,6 +399,8 @@ const styles = StyleSheet.create({
     maxHeight: 55,
   },
   filterChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
     paddingHorizontal: 14,
     paddingVertical: 6,
     borderRadius: 20,
@@ -318,9 +408,22 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
     marginRight: 8,
     backgroundColor: colors.white,
+    gap: 4,
   },
   filterChipActive: { backgroundColor: colors.primary, borderColor: colors.primary },
+  // ── Overdue chip gets a red border when there are unread overdue alerts ────
+  filterChipOverdue: { borderColor: '#c0392b', backgroundColor: '#fff5f5' },
   filterChipText: { fontSize: 12, fontWeight: '600', color: colors.textSecondary },
+  filterChipBadge: {
+    backgroundColor: '#c0392b',
+    borderRadius: 8,
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    minWidth: 16,
+    alignItems: 'center',
+  },
+  filterChipBadgeText: { fontSize: 10, color: '#fff', fontWeight: '800' },
+
   loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingTop: 60 },
   content: { flex: 1, padding: 15 },
   alertCard: {
@@ -333,6 +436,14 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.1,
     shadowRadius: 3,
+  },
+  // ── Overdue alert cards get a full border for extra prominence ─────────────
+  alertCardOverdue: {
+    borderWidth: 1,
+    borderColor: '#ffcccc',
+    borderLeftWidth: 5,
+    elevation: 3,
+    shadowOpacity: 0.15,
   },
   alertTop: { flexDirection: 'row', marginBottom: 10 },
   alertIconContainer: {
