@@ -200,10 +200,6 @@ function toScheduleShape(row) {
 }
 
 // Helper: builds a safe parameterised date WHERE clause and pushes the param.
-// col        — the column expression, e.g. 'mi.taken_at'
-// dateFilter — YYYY-MM-DD string or null/undefined
-// days       — fallback interval in days
-// params     — the params array to mutate
 function buildDateClause(col, dateFilter, days, params) {
   if (dateFilter) {
     params.push(dateFilter);
@@ -215,22 +211,12 @@ function buildDateClause(col, dateFilter, days, params) {
 
 // =============================================================================
 // CRON JOB — runs every minute
-//
-// medication_intake.status enum: pending | taken | not_taken | partial | snoozed | missed | overdue
-// reminder_logs.status enum:     sent | failed | responded
-//
-// Rules:
-//   1. Wake expired snoozes → reset status back to 'pending'  (NOT 'pending_after_snooze' — not in enum)
-//   2. Skip terminal positive states: taken, partial
-//   3. Skip active snoozes (snooze_until > NOW())
-//   4. not_taken is eligible for the NEXT reminder cycle
-//   5. When attemptCount >= maxReminders and still no terminal → insert missed+overdue
 // =============================================================================
 cron.schedule('* * * * *', () => {
   const todayISO = new Date().toISOString().split('T')[0];
-  const nowTime  = new Date().toTimeString().slice(0, 5); // HH:MM
+  const nowTime  = new Date().toTimeString().slice(0, 5);
 
-  // ── Step 1: Wake expired snoozes ──────────────────────────────────────────
+  // Step 1: Wake expired snoozes
   db.query(
     `UPDATE medication_intake
      SET status = 'pending', snooze_until = NULL
@@ -241,7 +227,7 @@ cron.schedule('* * * * *', () => {
     (err) => { if (err) console.log('[CRON] snooze expiry error:', err.message); }
   );
 
-  // ── Step 2: Find schedules due now ────────────────────────────────────────
+  // Step 2: Find schedules due now
   db.query(
     `SELECT
        m.id           AS medId,
@@ -289,18 +275,14 @@ cron.schedule('* * * * *', () => {
         if (!isScheduledToday(meta.days || ['daily']))   return;
         if (meta.endDate   && todayISO > meta.endDate)   return;
 
-        // Terminal positive — cron must not touch
         if (row.intakeStatus === 'taken' || row.intakeStatus === 'partial') return;
-        // Already auto-marked overdue today
         if (row.intakeStatus === 'overdue') return;
-        // Active snooze in progress
         if (row.activeSnoozeUntil) return;
 
         const maxReminders = meta.maxRem   || 3;
         const intervalMins = meta.interval || 30;
         const attemptCount = row.attemptCount || 0;
 
-        // Check cooldown since last reminder
         db.query(
           `SELECT sent_at FROM reminder_logs
            WHERE medication_id = ? AND user_id = ? AND scheduled_date = ?
@@ -315,7 +297,7 @@ cron.schedule('* * * * *', () => {
               if (diffMins < intervalMins) return;
             }
 
-            // ── OVERDUE ────────────────────────────────────────────────────
+            // OVERDUE
             if (attemptCount >= maxReminders) {
               db.query(
                 `SELECT id FROM medication_intake
@@ -340,11 +322,9 @@ cron.schedule('* * * * *', () => {
                     `⚠️ OVERDUE: "${row.title}" (${row.type}) — no response after ${attemptCount} reminders`
                   );
 
-                  // ── Fetch 7-day adherence for this medication to include in alert ──
                   const sevenDaysAgo = new Date();
                   sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 6);
                   const sevenDaysAgoISO = sevenDaysAgo.toISOString().split('T')[0];
-                  const DAY_NAMES_OVD = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 
                   db.query(
                     `SELECT
@@ -363,7 +343,7 @@ cron.schedule('* * * * *', () => {
                      ) mi`,
                     [row.medId, row.elderId, sevenDaysAgoISO, todayISO],
                     (errAdh, adhRows) => {
-                      const adhData   = adhRows && adhRows[0] ? adhRows[0] : null;
+                      const adhData = adhRows && adhRows[0] ? adhRows[0] : null;
                       let adhStr = '';
                       if (adhData && adhData.days_due > 0) {
                         const pct = Math.round(((parseFloat(adhData.days_taken) + parseFloat(adhData.days_partial)) / adhData.days_due) * 100);
@@ -390,7 +370,7 @@ cron.schedule('* * * * *', () => {
               return;
             }
 
-            // ── REMIND ─────────────────────────────────────────────────────
+            // REMIND
             const attemptNum = attemptCount + 1;
             const isFirst    = attemptNum === 1;
 
@@ -755,6 +735,227 @@ app.get('/api/health-trends/:userId/:logType', (req, res) => {
 });
 
 // =============================================================================
+// DJANGO REGRESSION SERVICE
+// =============================================================================
+const DJANGO_REGRESSION_URL = process.env.DJANGO_REGRESSION_URL || 'http://localhost:8001';
+
+async function callDjangoRegressionBatch(vitalsPayload) {
+  try {
+    const resp = await fetch(`${DJANGO_REGRESSION_URL}/api/regression/batch/`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ vitals: vitalsPayload }),
+    });
+    if (!resp.ok) {
+      console.error('[django-regression] batch returned', resp.status);
+      return null;
+    }
+    return await resp.json();
+  } catch (err) {
+    console.error('[django-regression] batch call failed:', err.message);
+    return null;
+  }
+}
+
+async function callDjangoRegressionSingle(log_type, readings) {
+  try {
+    const resp = await fetch(`${DJANGO_REGRESSION_URL}/api/regression/single/`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ log_type, readings }),
+    });
+    if (!resp.ok) return null;
+    return await resp.json();
+  } catch (err) {
+    console.error('[django-regression] single call failed:', err.message);
+    return null;
+  }
+}
+
+// =============================================================================
+// REGRESSION HELPERS — progressive date-window fallback
+// =============================================================================
+
+// Group flat rows by log_type → { heart_rate: [{date, value}, ...], ... }
+function groupByLogType(rows) {
+  const g = {};
+  rows.forEach(r => {
+    if (!g[r.log_type]) g[r.log_type] = [];
+    g[r.log_type].push({ date: r.date, value: r.value });
+  });
+  return g;
+}
+
+// Fetch ALL vitals for an elder, trying progressively smaller windows until
+// at least one vital type has ≥ 2 readings.
+// Returns { rows, windowDays } or null if truly no data.
+async function fetchAllVitalsWithFallback(elderId, preferredDays) {
+  // Build deduplicated, descending list of windows to try
+  const FALLBACK_WINDOWS = [preferredDays, 30, 14, 7]
+    .filter((v, i, arr) => arr.indexOf(v) === i && v > 0)
+    .sort((a, b) => b - a);
+
+  for (const days of FALLBACK_WINDOWS) {
+    const endDate   = new Date().toISOString().split('T')[0];
+    const startDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+
+    const rows = await new Promise((resolve) => {
+      db.query(
+        `SELECT log_type, value, unit, DATE(logged_at) AS date
+         FROM   health_logs
+         WHERE  user_id = ?
+           AND  DATE(logged_at) BETWEEN ? AND ?
+         ORDER  BY log_type, logged_at ASC`,
+        [elderId, startDate, endDate],
+        (err, r) => resolve(err ? [] : (r || []))
+      );
+    });
+
+    const grouped    = groupByLogType(rows);
+    const validTypes = Object.values(grouped).filter(arr => arr.length >= 2);
+    if (validTypes.length > 0) return { rows, windowDays: days };
+  }
+
+  // Last resort: latest 20 readings per vital, regardless of date
+  const rows = await new Promise((resolve) => {
+    db.query(
+      `SELECT log_type, value, unit, DATE(logged_at) AS date
+       FROM   health_logs
+       WHERE  user_id = ?
+       ORDER  BY log_type, logged_at DESC`,
+      [elderId],
+      (err, r) => resolve(err ? [] : (r || []))
+    );
+  });
+
+  // Limit to 20 per type and reverse so oldest-first
+  const grouped     = groupByLogType(rows);
+  const limitedRows = [];
+  Object.entries(grouped).forEach(([logType, arr]) => {
+    arr.slice(0, 20).reverse().forEach(item => {
+      limitedRows.push({ log_type: logType, value: item.value, date: item.date });
+    });
+  });
+
+  return limitedRows.length >= 2 ? { rows: limitedRows, windowDays: null } : null;
+}
+
+// Fetch a SINGLE vital with progressive fallback.
+// Returns { rows, windowDays } or null.
+async function fetchSingleVitalWithFallback(elderId, logType, preferredDays) {
+  const FALLBACK_WINDOWS = [preferredDays, 30, 14, 7]
+    .filter((v, i, arr) => arr.indexOf(v) === i && v > 0)
+    .sort((a, b) => b - a);
+
+  for (const days of FALLBACK_WINDOWS) {
+    const endDate   = new Date().toISOString().split('T')[0];
+    const startDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+
+    const rows = await new Promise((resolve) => {
+      db.query(
+        `SELECT value, DATE(logged_at) AS date
+         FROM   health_logs
+         WHERE  user_id  = ?
+           AND  log_type = ?
+           AND  DATE(logged_at) BETWEEN ? AND ?
+         ORDER  BY logged_at ASC`,
+        [elderId, logType, startDate, endDate],
+        (err, r) => resolve(err ? [] : (r || []))
+      );
+    });
+
+    if (rows.length >= 2) return { rows, windowDays: days };
+  }
+
+  // Last resort: most recent 20 readings ever
+  const rows = await new Promise((resolve) => {
+    db.query(
+      `SELECT value, DATE(logged_at) AS date
+       FROM   health_logs
+       WHERE  user_id  = ? AND log_type = ?
+       ORDER  BY logged_at DESC LIMIT 20`,
+      [elderId, logType],
+      (err, r) => resolve(err ? [] : (r || []).reverse())
+    );
+  });
+
+  return rows.length >= 2 ? { rows, windowDays: null } : null;
+}
+
+// =============================================================================
+// GET /api/health-trends/report/:elderId
+// All-vitals batch regression with progressive fallback.
+// Query params: days (default 30)
+// =============================================================================
+app.get('/api/health-trends/report/:elderId', async (req, res) => {
+  const { elderId } = req.params;
+  const preferredDays = parseInt(req.query.days) || 30;
+
+  const result = await fetchAllVitalsWithFallback(elderId, preferredDays);
+
+  if (!result || !result.rows || !result.rows.length) {
+    return res.json([]);  // No data at all — frontend shows empty state
+  }
+
+  const { rows, windowDays } = result;
+
+  // Group and filter: each vital needs ≥ 2 readings for linregress
+  const grouped       = groupByLogType(rows);
+  const vitalsPayload = Object.entries(grouped)
+    .filter(([, readings]) => readings.length >= 2)
+    .map(([log_type, readings]) => ({ log_type, readings }));
+
+  if (!vitalsPayload.length) return res.json([]);
+
+  const regressionResults = await callDjangoRegressionBatch(vitalsPayload);
+  if (!regressionResults) {
+    return res.status(503).json({
+      message: 'Regression service unavailable. Is Django running on port 8001?',
+    });
+  }
+
+  // Attach actual window metadata so the frontend can display a notice
+  const enriched = regressionResults.map(vital => ({
+    ...vital,
+    data_window_days:  windowDays,
+    data_window_label: windowDays ? `Last ${windowDays} days` : 'All available data',
+  }));
+
+  res.json(enriched);
+});
+
+// =============================================================================
+// GET /api/health-trends/report/:elderId/:logType
+// Single-vital regression with progressive fallback.
+// Query params: days (default 30)
+// =============================================================================
+app.get('/api/health-trends/report/:elderId/:logType', async (req, res) => {
+  const { elderId, logType } = req.params;
+  const preferredDays = parseInt(req.query.days) || 30;
+
+  const result = await fetchSingleVitalWithFallback(elderId, logType, preferredDays);
+
+  if (!result) {
+    return res.status(404).json({
+      message: `No data found for ${logType}. At least 2 readings are required to compute a trend.`,
+    });
+  }
+
+  const { rows, windowDays } = result;
+
+  const regressionResult = await callDjangoRegressionSingle(logType, rows);
+  if (!regressionResult) {
+    return res.status(503).json({ message: 'Regression service unavailable' });
+  }
+
+  res.json({
+    ...regressionResult,
+    data_window_days:  windowDays,
+    data_window_label: windowDays ? `Last ${windowDays} days` : 'All available data',
+  });
+});
+
+// =============================================================================
 // MOOD
 // =============================================================================
 app.post('/api/mood', (req, res) => {
@@ -1038,10 +1239,7 @@ app.get('/api/schedules/elder/:elderId', (req, res) => {
 });
 
 // =============================================================================
-// SCHEDULES/TODAY — Get today's schedule for an elder
-// FIX: Correlated subquery to fetch only the LATEST intake row per medication,
-//      preventing duplicate cards when multiple intake rows exist for one day
-//      (e.g. snoozed → then responded later).
+// SCHEDULES/TODAY
 // =============================================================================
 app.get('/api/schedules/today/:elderId', (req, res) => {
   const todayISO = new Date().toISOString().split('T')[0];
@@ -1087,7 +1285,6 @@ app.get('/api/schedules/today/:elderId', (req, res) => {
 
       const output = schedRows.map(r => {
         const meta = parseMeta(r.notes) || {};
-        // is_overdue=1 is always authoritative — takes precedence over status column
         let log_status = null;
         if      (r.is_overdue)                    log_status = 'overdue';
         else if (r.intake_status === 'taken')     log_status = 'done';
@@ -1133,30 +1330,13 @@ app.get('/api/schedules/today/:elderId', (req, res) => {
 });
 
 // =============================================================================
-// SCHEDULES/TODAY/CAREGIVER — Real-time today's schedule for ALL connected elders
-//
-// This is the KEY endpoint the caregiver monitoring screen uses.
-// Unlike the activity-feed (which only shows past events), this endpoint
-// computes the live visual state of every scheduled item TODAY by joining:
-//   medications → medication_intake (latest row per med per day)
-//                → reminder_logs   (count for today)
-//
-// Returned visual_state:
-//   upcoming  — scheduled_time hasn't arrived yet, no intake row
-//   pending   — scheduled_time passed, 0 reminders sent today
-//   reminded  — 1+ reminders sent, no response yet
-//   snoozed   — intake.status=snoozed AND snooze_until > NOW()
-//   not_taken — intake.status=not_taken (elder said no this cycle)
-//   partial   — intake.status=partial (terminal)
-//   taken     — intake.status=taken   (terminal)
-//   overdue   — intake.is_overdue=1   (max reminders exhausted)
+// SCHEDULES/TODAY/CAREGIVER
 // =============================================================================
 app.get('/api/schedules/today/caregiver/:caregiverId', (req, res) => {
   const todayISO = new Date().toISOString().split('T')[0];
   const elderFilter = req.query.elderId || null;
 
   let elderSQL = '';
-  // Params order matches ? placeholders: (1) rl.scheduled_date, (2) c.requester_id, (3) optional elderId
   const queryParams = [todayISO, req.params.caregiverId];
   if (elderFilter) {
     elderSQL = 'AND m.user_id = ?';
@@ -1199,8 +1379,8 @@ app.get('/api/schedules/today/caregiver/:caregiverId', (req, res) => {
     (err, rows) => {
       if (err) return res.status(500).json({ message: 'Error: ' + err.message });
 
-      const nowStr  = new Date().toTimeString().slice(0, 5); // HH:MM
-      const output  = [];
+      const nowStr = new Date().toTimeString().slice(0, 5);
+      const output = [];
 
       (rows || []).forEach(r => {
         const meta = parseMeta(r.notes);
@@ -1209,13 +1389,12 @@ app.get('/api/schedules/today/caregiver/:caregiverId', (req, res) => {
         if (meta.endDate   && todayISO > meta.endDate)   return;
         if (!isScheduledToday(meta.days)) return;
 
-        const scheduledTime  = r.time || '00:00';
-        const reminderCount  = r.reminded_count || 0;
-        const maxReminders   = meta.maxRem || 3;
-        const intakeStatus   = r.intake_status;
-        const isOverdue      = r.is_overdue || 0;
+        const scheduledTime = r.time || '00:00';
+        const reminderCount = r.reminded_count || 0;
+        const maxReminders  = meta.maxRem || 3;
+        const intakeStatus  = r.intake_status;
+        const isOverdue     = r.is_overdue || 0;
 
-        // Compute visual_state server-side — single source of truth
         let visual_state;
         if (isOverdue) {
           visual_state = 'overdue';
@@ -1226,14 +1405,12 @@ app.get('/api/schedules/today/caregiver/:caregiverId', (req, res) => {
         } else if (intakeStatus === 'not_taken') {
           visual_state = 'not_taken';
         } else if (intakeStatus === 'missed') {
-          // missed = system skipped (not overdue) — treat as not_taken for display
           visual_state = 'not_taken';
         } else if (intakeStatus === 'snoozed' && r.snooze_until && new Date(r.snooze_until) > new Date()) {
           visual_state = 'snoozed';
         } else if (nowStr < scheduledTime) {
           visual_state = 'upcoming';
         } else if (reminderCount >= maxReminders) {
-          // All reminders exhausted, cron will mark overdue soon
           visual_state = 'overdue';
         } else if (reminderCount > 0) {
           visual_state = 'reminded';
@@ -1271,25 +1448,14 @@ app.get('/api/schedules/today/caregiver/:caregiverId', (req, res) => {
 });
 
 // =============================================================================
-// GET /api/schedules/date/caregiver/:caregiverId?date=YYYY-MM-DD[&elderId=X]
-//
-// Like the today endpoint but for ANY date (past or future).
-// Returns every medication scheduled on that date for all connected elders,
-// with its status reconstructed from medication_intake + reminder_logs.
-//
-// For dates in the past this gives the full picture — including items that
-// were never interacted with (no reminder, no response) which the activity
-// feed misses entirely.
+// SCHEDULES/DATE/CAREGIVER
 // =============================================================================
 app.get('/api/schedules/date/caregiver/:caregiverId', (req, res) => {
-  const dateISO    = req.query.date || new Date().toISOString().split('T')[0];
+  const dateISO     = req.query.date || new Date().toISOString().split('T')[0];
   const elderFilter = req.query.elderId || null;
 
   let elderSQL = '';
-  if (elderFilter) {
-    elderSQL = 'AND m.user_id = ?';
-  }
-  // Params match ? order in query: (1) rl.scheduled_date, (2) c.requester_id, (3) DATE(taken_at), [(4) m.user_id]
+  if (elderFilter) elderSQL = 'AND m.user_id = ?';
   const queryParams = [dateISO, req.params.caregiverId, dateISO, ...(elderFilter ? [elderFilter] : [])];
 
   db.query(
@@ -1328,8 +1494,8 @@ app.get('/api/schedules/date/caregiver/:caregiverId', (req, res) => {
     (err, rows) => {
       if (err) return res.status(500).json({ message: 'Error: ' + err.message });
 
-      const isPast   = dateISO < new Date().toISOString().split('T')[0];
-      const output   = [];
+      const isPast = dateISO < new Date().toISOString().split('T')[0];
+      const output = [];
 
       (rows || []).forEach(r => {
         const meta = parseMeta(r.notes);
@@ -1344,8 +1510,6 @@ app.get('/api/schedules/date/caregiver/:caregiverId', (req, res) => {
         const intakeStatus  = r.intake_status;
         const isOverdue     = r.is_overdue  || 0;
 
-        // Compute visual_state — same logic as today endpoint
-        // but for past dates: anything unresponded = missed
         let visual_state;
         if (isOverdue) {
           visual_state = 'overdue';
@@ -1356,13 +1520,10 @@ app.get('/api/schedules/date/caregiver/:caregiverId', (req, res) => {
         } else if (intakeStatus === 'not_taken' || intakeStatus === 'missed') {
           visual_state = 'not_taken';
         } else if (intakeStatus === 'snoozed') {
-          // Past snoozed with no follow-up = effectively missed
           visual_state = isPast ? 'not_taken' : 'snoozed';
         } else if (!intakeStatus && isPast && reminderCount > 0) {
-          // Reminders sent, day has passed, no response recorded = overdue/missed
           visual_state = 'overdue';
         } else if (!intakeStatus && isPast) {
-          // No reminder, no response, day has passed = pending/never reached
           visual_state = 'pending';
         } else if (reminderCount >= maxReminders) {
           visual_state = 'overdue';
@@ -1433,15 +1594,6 @@ app.delete('/api/schedules/:id', (req, res) => {
 
 // =============================================================================
 // SCHEDULES/RESPOND
-//
-// medication_intake status enum: pending | taken | not_taken | partial | snoozed | missed | overdue
-//
-// UI → DB mapping:
-//   'done'      → 'taken'        sets actual_taken_at
-//   'partial'   → 'partial'      sets actual_taken_at + partial_dose
-//   'snooze'    → 'snoozed'      sets snooze_until + increments snooze_count
-//   'not_taken' → 'not_taken'    elder explicitly said no this cycle
-//   anything else → 'missed'
 // =============================================================================
 app.post('/api/schedules/respond', (req, res) => {
   const { scheduleId, elderId, status, responseNote, partialDose, snoozeDuration } = req.body;
@@ -1458,7 +1610,6 @@ app.post('/api/schedules/respond', (req, res) => {
     ? new Date(Date.now() + snoozeDuration * 60000)
     : null;
 
-  // Fetch existing row (latest) for today
   db.query(
     `SELECT id, is_overdue, snooze_count FROM medication_intake
      WHERE medication_id=? AND user_id=? AND DATE(taken_at)=CURDATE()
@@ -1475,7 +1626,6 @@ app.post('/api/schedules/respond', (req, res) => {
       const afterSave = (saveErr) => {
         if (saveErr) return res.status(400).json({ message: 'Failed: ' + saveErr.message });
 
-        // Background: activity log + caregiver alert
         db.query('SELECT name, notes, frequency FROM medications WHERE id=?', [scheduleId], (_, rows) => {
           if (!rows || !rows.length) return;
           const { name, notes, frequency } = rows[0];
@@ -1491,7 +1641,6 @@ app.post('/api/schedules/respond', (req, res) => {
             (snoozeDuration ? ` — snoozed ${snoozeDuration}min`         : '')
           );
 
-          // Mark reminder_logs responded only on terminal positive
           if (isTerminalPositive) {
             const todayISO = new Date().toISOString().split('T')[0];
             db.query(
@@ -1623,9 +1772,6 @@ app.get('/api/schedules/today-summary/:elderId', (req, res) => {
 
 // =============================================================================
 // MEDICATION ACTIVITY FEED
-// FIX: All date filtering uses parameterised queries via buildDateClause() —
-//      no more unsafe db.escape() string interpolation.
-// Surfaces: actual_taken_at, snooze_count, is_nudge (all real columns).
 // =============================================================================
 app.get('/api/medication-activity/:elderId', (req, res) => {
   const elderId    = req.params.elderId;
@@ -1775,22 +1921,12 @@ app.get('/api/medication-activity/caregiver/:caregiverId', (req, res) => {
 });
 
 // =============================================================================
-// ADHERENCE — 7-day per-medication adherence rates
-//
-// Logic:
-//   For each scheduled medication, count how many days it was due in the window.
-//   A day is "due" if the medication's scheduled days include that weekday AND
-//   the date falls within startDate..endDate of the medication.
-//   Adherence = (taken + partial) / days_due  × 100
-//   Partial counts as 0.5 toward adherence.
-//
-// Returns per-medication rows + overall summary.
+// ADHERENCE
 // =============================================================================
 app.get('/api/adherence/:elderId', (req, res) => {
   const elderId = req.params.elderId;
   const days    = Math.min(parseInt(req.query.days) || 7, 30);
 
-  // Build array of last N days
   const dateList = [];
   for (let i = 0; i < days; i++) {
     const d = new Date();
@@ -1826,25 +1962,23 @@ app.get('/api/adherence/:elderId', (req, res) => {
     (err, rows) => {
       if (err) return res.status(500).json({ message: 'Error: ' + err.message });
 
-      const DAY_NAMES = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+      const DAY_NAMES_ADH = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
       const results = [];
-
       let overallDue = 0, overallDone = 0;
 
       (rows || []).forEach(r => {
         const meta = parseMeta(r.notes);
-        if (!meta) return; // not a scheduled medication
+        if (!meta) return;
 
         const scheduledDays = meta.days || ['daily'];
         const medStart      = meta.startDate || startDate;
         const medEnd        = meta.endDate   || endDate;
 
-        // Build per-day breakdown
         const dailyMap = {};
         if (r.daily_detail) {
           r.daily_detail.split('|').forEach(entry => {
             const [date, status, isOvr] = entry.split(':');
-            if (!dailyMap[date] || isOvr === '1') { // overdue wins
+            if (!dailyMap[date] || isOvr === '1') {
               dailyMap[date] = { status, is_overdue: isOvr === '1' };
             }
           });
@@ -1854,7 +1988,7 @@ app.get('/api/adherence/:elderId', (req, res) => {
             daysMissed = 0, daysOverdue = 0, daysNoData = 0;
 
         const dailyBreakdown = dateList.map(iso => {
-          const dayName = DAY_NAMES[new Date(iso + 'T12:00:00').getDay()];
+          const dayName = DAY_NAMES_ADH[new Date(iso + 'T12:00:00').getDay()];
           const isDue =
             iso >= medStart && iso <= medEnd &&
             (scheduledDays.includes('daily') || scheduledDays.includes('everyday') ||
@@ -1865,7 +1999,6 @@ app.get('/api/adherence/:elderId', (req, res) => {
             daysDue++;
             const d = dailyMap[iso];
             if (!d) {
-              // Today — pending is OK, past days = missed
               outcome = iso === endDate ? 'pending' : 'missed';
               if (iso !== endDate) daysMissed++;
               else daysNoData++;
@@ -1878,7 +2011,7 @@ app.get('/api/adherence/:elderId', (req, res) => {
             } else if (d.status === 'not_taken') {
               outcome = 'skipped'; daysMissed++;
             } else if (d.status === 'snoozed') {
-              outcome = 'pending'; daysNoData++; // still active today
+              outcome = 'pending'; daysNoData++;
             } else {
               outcome = 'pending'; daysNoData++;
             }
@@ -1887,10 +2020,9 @@ app.get('/api/adherence/:elderId', (req, res) => {
           return { date: iso, outcome };
         });
 
-        // Adherence: taken=1 point, partial=0.5 point, everything else=0
         const adherencePct = daysDue > 0
           ? Math.round(((daysTaken + daysPartial * 0.5) / daysDue) * 100)
-          : null; // null = not yet due
+          : null;
 
         overallDue  += daysDue;
         overallDone += daysTaken + daysPartial * 0.5;
@@ -1908,11 +2040,10 @@ app.get('/api/adherence/:elderId', (req, res) => {
           days_missed:    daysMissed,
           days_overdue:   daysOverdue,
           adherence_pct:  adherencePct,
-          daily_breakdown: dailyBreakdown.reverse(), // oldest → newest
+          daily_breakdown: dailyBreakdown.reverse(),
         });
       });
 
-      // Sort: worst adherence first
       results.sort((a, b) => {
         if (a.adherence_pct === null) return 1;
         if (b.adherence_pct === null) return -1;
@@ -1937,7 +2068,7 @@ app.get('/api/adherence/:elderId', (req, res) => {
   );
 });
 
-// Caregiver view — adherence summary for all connected elders
+// Caregiver adherence summary
 app.get('/api/adherence/caregiver/:caregiverId', (req, res) => {
   const caregiverId = req.params.caregiverId;
   const days        = Math.min(parseInt(req.query.days) || 7, 30);
@@ -1956,10 +2087,8 @@ app.get('/api/adherence/caregiver/:caregiverId', (req, res) => {
       if (err) return res.status(500).json({ message: 'Error: ' + err.message });
       if (!elders || !elders.length) return res.json([]);
 
-      // Fetch adherence for each elder in parallel (re-use the same logic via internal query)
       const results = await Promise.all(elders.map(elder => {
         return new Promise((resolve) => {
-          // Re-run adherence query inline for this elder
           const dateList = [];
           for (let i = 0; i < days; i++) {
             const d = new Date(); d.setDate(d.getDate() - i);
@@ -1967,7 +2096,7 @@ app.get('/api/adherence/caregiver/:caregiverId', (req, res) => {
           }
           const startDate = dateList[dateList.length - 1];
           const endDate   = dateList[0];
-          const DAY_NAMES = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+          const DAY_NAMES_CG = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 
           db.query(
             `SELECT m.*,
@@ -2000,7 +2129,7 @@ app.get('/api/adherence/caregiver/:caregiverId', (req, res) => {
 
                 let daysDue = 0, daysTaken = 0, daysPartial = 0;
                 dateList.forEach(iso => {
-                  const dayName = DAY_NAMES[new Date(iso + 'T12:00:00').getDay()];
+                  const dayName = DAY_NAMES_CG[new Date(iso + 'T12:00:00').getDay()];
                   const isDue = iso >= medStart && iso <= medEnd &&
                     (scheduledDays.includes('daily') || scheduledDays.includes('everyday') ||
                      scheduledDays.includes(dayName) || scheduledDays.includes(dayName.toLowerCase()));
@@ -2025,7 +2154,7 @@ app.get('/api/adherence/caregiver/:caregiverId', (req, res) => {
                 elder_name:            elder.name,
                 overall_adherence_pct: overallDue > 0 ? Math.round((overallDone / overallDue) * 100) : null,
                 total_meds:            totalMeds,
-                critical_count:        criticalCount, // meds with <50% adherence
+                critical_count:        criticalCount,
                 period_days:           days,
               });
             }
@@ -2039,15 +2168,11 @@ app.get('/api/adherence/caregiver/:caregiverId', (req, res) => {
 });
 
 // =============================================================================
-// DAILY END-OF-DAY ADHERENCE SUMMARY CRON — runs at 9 PM every day
-// Sends a daily adherence digest to each caregiver for all their elders.
-// Only runs if any elder has scheduled medications.
+// DAILY END-OF-DAY SUMMARY CRON — 9 PM
 // =============================================================================
 cron.schedule('0 21 * * *', () => {
-  const todayISO  = new Date().toISOString().split('T')[0];
-  const DAY_NAMES = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  const todayISO = new Date().toISOString().split('T')[0];
 
-  // Get all caregivers with active connections
   db.query(
     `SELECT DISTINCT c.requester_id AS caregiverId, u.expo_push_token, u.name AS caregiverName
      FROM connections c
@@ -2058,7 +2183,6 @@ cron.schedule('0 21 * * *', () => {
       if (err || !caregivers) return;
 
       caregivers.forEach(cg => {
-        // Get all elders for this caregiver
         db.query(
           `SELECT u.id, u.name FROM users u
            JOIN connections c ON c.elder_id = u.id AND c.requester_id = ? AND c.status = 'approved'`,
@@ -2072,7 +2196,6 @@ cron.schedule('0 21 * * *', () => {
               if (--pending > 0) return;
               if (!summaryLines.length) return;
               const msg = summaryLines.join('\n');
-              // Send push notification with daily summary
               if (cg.expo_push_token) {
                 sendPushNotification(
                   cg.expo_push_token,
@@ -2081,7 +2204,6 @@ cron.schedule('0 21 * * *', () => {
                   { screen: 'Monitor' }
                 );
               }
-              // Create alert
               elders.forEach(elder => {
                 db.query(
                   `INSERT INTO alerts (user_id, caregiver_id, alert_type, message, is_read, priority, created_at)
@@ -2123,7 +2245,6 @@ cron.schedule('0 21 * * *', () => {
                     const overdue = scheduled.filter(m => m.overdue_today > 0).length;
                     const missed  = total - taken - partial - overdue;
                     const pct     = Math.round(((taken + partial * 0.5) / total) * 100);
-
                     const statusIcon = pct >= 80 ? '✅' : pct >= 50 ? '⚠️' : '🚨';
                     summaryLines.push(
                       `${statusIcon} ${elder.name}: ${taken}/${total} taken (${pct}%)` +
@@ -2144,12 +2265,11 @@ cron.schedule('0 21 * * *', () => {
 });
 
 // =============================================================================
-// WEEKLY ADHERENCE ALERT — runs Monday 8 AM
-// Flags any elder whose 7-day adherence dropped below 70%
+// WEEKLY ADHERENCE ALERT CRON — Monday 8 AM
 // =============================================================================
 cron.schedule('0 8 * * 1', () => {
-  const DAY_NAMES = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
-  const dateList  = [];
+  const DAY_NAMES_WK = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  const dateList = [];
   for (let i = 0; i < 7; i++) {
     const d = new Date(); d.setDate(d.getDate() - i);
     dateList.push(d.toISOString().split('T')[0]);
@@ -2183,7 +2303,7 @@ cron.schedule('0 8 * * 1', () => {
                 if (!dailyMap[date] || ov === '1') dailyMap[date] = { status, is_overdue: ov === '1' };
               });
               dateList.forEach(iso => {
-                const dayName = DAY_NAMES[new Date(iso + 'T12:00:00').getDay()];
+                const dayName = DAY_NAMES_WK[new Date(iso + 'T12:00:00').getDay()];
                 const isDue = iso >= (meta.startDate || startDate) && iso <= (meta.endDate || endDate) &&
                   (sd.includes('daily') || sd.includes('everyday') || sd.includes(dayName) || sd.includes(dayName.toLowerCase()));
                 if (!isDue) return;
@@ -2212,14 +2332,7 @@ cron.schedule('0 8 * * 1', () => {
 });
 
 // =============================================================================
-const PORT = 3000;
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Server running on http://192.168.1.68:${PORT}`);
-});
-
-// =============================================================================
 // ADHERENCE — missed dose history for a specific medication
-// GET /api/adherence/missed/:elderId/:medicationId?days=7
 // =============================================================================
 app.get('/api/adherence/missed/:elderId/:medicationId', (req, res) => {
   const { elderId, medicationId } = req.params;
@@ -2246,7 +2359,7 @@ app.get('/api/adherence/missed/:elderId/:medicationId', (req, res) => {
       const meta = parseMeta(r.notes);
       if (!meta) return res.status(404).json({ message: 'Not a scheduled medication' });
 
-      const DAY_NAMES     = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+      const DAY_NAMES_MS  = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
       const scheduledDays = meta.days || ['daily'];
       const medStart      = meta.startDate || startDate;
       const medEnd        = meta.endDate   || endDate;
@@ -2261,7 +2374,7 @@ app.get('/api/adherence/missed/:elderId/:medicationId', (req, res) => {
 
       let daysDue = 0, daysTaken = 0, daysPartial = 0, daysMissed = 0, daysOverdue = 0;
       const daily = dateList.map(iso => {
-        const dayName = DAY_NAMES[new Date(iso + 'T12:00:00').getDay()];
+        const dayName = DAY_NAMES_MS[new Date(iso + 'T12:00:00').getDay()];
         const isDue   = iso >= medStart && iso <= medEnd &&
           (scheduledDays.includes('daily') || scheduledDays.includes('everyday') ||
            scheduledDays.includes(dayName) || scheduledDays.includes(dayName.toLowerCase()));
@@ -2299,8 +2412,7 @@ app.get('/api/adherence/missed/:elderId/:medicationId', (req, res) => {
 });
 
 // =============================================================================
-// ADHERENCE — quick summary for a single elder (used by caregiver adherence tab)
-// GET /api/adherence/summary/:elderId?days=7
+// ADHERENCE — quick summary for a single elder
 // =============================================================================
 app.get('/api/adherence/summary/:elderId', (req, res) => {
   const elderId = req.params.elderId;
@@ -2312,7 +2424,7 @@ app.get('/api/adherence/summary/:elderId', (req, res) => {
   }
   const startDate = dateList[dateList.length - 1];
   const endDate   = dateList[0];
-  const DAY_NAMES = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  const DAY_NAMES_SUM = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 
   db.query(
     `SELECT m.id, m.name, m.frequency, m.time, m.notes,
@@ -2341,7 +2453,7 @@ app.get('/api/adherence/summary/:elderId', (req, res) => {
 
         let daysDue = 0, daysTaken = 0, daysPartial = 0, daysMissed = 0, daysOverdue = 0;
         dateList.forEach(iso => {
-          const dayName = DAY_NAMES[new Date(iso + 'T12:00:00').getDay()];
+          const dayName = DAY_NAMES_SUM[new Date(iso + 'T12:00:00').getDay()];
           const isDue = iso >= medStart && iso <= medEnd &&
             (scheduledDays.includes('daily') || scheduledDays.includes('everyday') ||
              scheduledDays.includes(dayName) || scheduledDays.includes(dayName.toLowerCase()));
@@ -2384,4 +2496,10 @@ app.get('/api/adherence/summary/:elderId', (req, res) => {
       });
     }
   );
+});
+
+// =============================================================================
+const PORT = 3000;
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`Server running on http://192.168.1.68:${PORT}`);
 });

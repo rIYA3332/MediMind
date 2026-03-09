@@ -173,6 +173,29 @@ const HealthStatusScreen = ({ route, navigation }: any) => {
           </View>
         )}
 
+        
+        <TouchableOpacity
+  style={{
+    backgroundColor: colors.primary,
+    margin: 15,
+    marginBottom: 0,
+    padding: 14,
+    borderRadius: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  }}
+  onPress={() => navigation.navigate('VitalsTrend', {
+    elderId:   elderId,
+    elderName: elderName,
+  })}>
+  <Text style={{ color: '#fff', fontWeight: '700', fontSize: 14 }}>
+    📈 View 30-Day Trend Analysis
+  </Text>
+</TouchableOpacity>
+        
+
         {/* Vital Signs */}
         <Text style={styles.sectionLabel}>Vital Signs</Text>
 

@@ -1,0 +1,5 @@
+django>=4.2,<5.0
+djangorestframework>=3.14
+numpy>=1.24
+scipy>=1.10
+gunicorn>=21.0      # production server
