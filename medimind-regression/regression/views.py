@@ -7,6 +7,11 @@
 # still produce a valid trend line.
 #
 # Minimum requirement: 2 readings total (not 2 different dates).
+#
+# THRESHOLD FIX: Each vital now uses its own meaningful slope threshold for
+# classifying a trend as "stable" vs "rising/falling".  The old flat 0.05
+# threshold treated a 0.05 mmHg/day BP change as rising (it's noise) while
+# also treating a 0.05 °F/day temperature change as noise (it's significant).
 # ─────────────────────────────────────────────────────────────────────────────
 
 import statistics
@@ -32,6 +37,27 @@ VITAL_META = {
     'temperature':    {'label': 'Temperature',    'unit': '°F',    'normal_range': '97 – 99'},
     'weight':         {'label': 'Weight',         'unit': 'kg',    'normal_range': 'Track changes'},
 }
+
+# ─── Per-vital stable thresholds (slope in units/day) ────────────────────────
+#
+# These define the minimum slope that counts as a real trend rather than noise.
+# They match the domain knowledge in utils.py.
+#
+#   blood_pressure : 0.15 mmHg/day  — small daily swings are normal
+#   blood_sugar    : 0.30 mg/dL/day — post-meal variation is large
+#   heart_rate     : 0.10 bpm/day   — resting HR fluctuates ~5 bpm day-to-day
+#   temperature    : 0.02 °F/day    — normal body temp range is only ±1 °F
+#   weight         : 0.02 kg/day    — even 0.1 kg/day shift is meaningful
+#
+STABLE_THRESHOLDS = {
+    'blood_pressure': 0.15,
+    'blood_sugar':    0.30,
+    'heart_rate':     0.10,
+    'temperature':    0.02,
+    'weight':         0.02,
+}
+DEFAULT_STABLE_THRESHOLD = 0.10   # fallback for unknown vitals
+
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -89,6 +115,30 @@ def _significance(p_value, n):
     return 'not_significant', f'No significant trend detected (p={_r(p_value, 3)})'
 
 
+def _classify_trend(slope: float, r_squared: float, log_type: str) -> str:
+    """
+    Returns 'rising', 'falling', or 'stable'.
+
+    Uses a per-vital slope threshold so that normal daily variation in a high-
+    variance vital (e.g. blood sugar) does not produce a spurious rising/falling
+    label, while a small but real shift in a low-variance vital (e.g. temperature)
+    is still caught.
+
+    A weak fit (r_squared < 0.10) is always classified as stable because the
+    line explains less than 10 % of the variance — it's not a reliable trend.
+    """
+    if r_squared < 0.10:
+        return 'stable'
+
+    threshold = STABLE_THRESHOLDS.get(log_type, DEFAULT_STABLE_THRESHOLD)
+
+    if slope > threshold:
+        return 'rising'
+    if slope < -threshold:
+        return 'falling'
+    return 'stable'
+
+
 # ─── Core regression ──────────────────────────────────────────────────────────
 
 def _run_regression(log_type, readings):
@@ -136,7 +186,6 @@ def _run_regression(log_type, readings):
 
     # ── Build X values ────────────────────────────────────────────────────────
     if same_day:
-        # Use reading index so we can still compute a slope within one day
         xs = [float(p['index']) for p in parsed]
     else:
         try:
@@ -148,7 +197,6 @@ def _run_regression(log_type, readings):
                 for p in parsed
             ]
         except ValueError:
-            # Fallback: use index if date parsing fails
             xs       = [float(p['index']) for p in parsed]
             same_day = True
 
@@ -179,14 +227,8 @@ def _run_regression(log_type, readings):
         std_err   = 0.0
         conf_95   = 0.0
 
-    # ── Classify trend ────────────────────────────────────────────────────────
-    SLOPE_THRESHOLD = 0.05
-    if abs(slope) < SLOPE_THRESHOLD or r_squared < 0.05:
-        trend = 'stable'
-    elif slope > 0:
-        trend = 'rising'
-    else:
-        trend = 'falling'
+    # ── Classify trend using per-vital threshold ──────────────────────────────
+    trend = _classify_trend(slope, r_squared, log_type)
 
     trend_label = {
         'rising':  '↑ Rising',
@@ -194,7 +236,7 @@ def _run_regression(log_type, readings):
         'stable':  '→ Stable',
     }[trend]
 
-    # change_per_week: days-based data → 7*slope; same-day → slope per reading
+    # change_per_week: days-based → 7*slope; same-day → slope per reading
     change_per_week = _r(slope) if same_day else _r(slope * 7)
 
     trend_line      = [_r(slope * x + intercept) for x in xs]
@@ -252,7 +294,7 @@ def _run_regression(log_type, readings):
         'unit':       meta['unit'],
         'readings':   reading_objects,
         'trend_line': trend_line,
-        'same_day':   same_day,    # frontend uses this to label X-axis correctly
+        'same_day':   same_day,
         'data_note':  data_note,
         'regression': {
             'slope':             _r(slope, 4),
@@ -343,4 +385,5 @@ def health_check(request):
         'scipy':                 SCIPY_AVAILABLE,
         'min_readings_required': 2,
         'same_day_support':      True,
+        'per_vital_thresholds':  STABLE_THRESHOLDS,
     })
