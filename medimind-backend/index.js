@@ -720,19 +720,8 @@ app.get('/api/health-summary/:userId', (req, res) => {
   );
 });
 
-app.get('/api/health-trends/:userId/:logType', (req, res) => {
-  db.query(
-    `SELECT value, unit, logged_at FROM health_logs
-     WHERE user_id=? AND log_type=?
-       AND logged_at >= DATE_SUB(NOW(), INTERVAL ? DAY)
-     ORDER BY logged_at ASC`,
-    [req.params.userId, req.params.logType, req.query.days || 7],
-    (err, results) => {
-      if (err) return res.status(500).json({ message: 'Error' });
-      res.json(results || []);
-    }
-  );
-});
+// NOTE: /api/health-trends/:userId/:logType MOVED to after the report routes
+// below so Express does not greedily match "report" as a userId.
 
 // =============================================================================
 // DJANGO REGRESSION SERVICE
@@ -953,6 +942,24 @@ app.get('/api/health-trends/report/:elderId/:logType', async (req, res) => {
     data_window_days:  windowDays,
     data_window_label: windowDays ? `Last ${windowDays} days` : 'All available data',
   });
+});
+
+// =============================================================================
+// GET /api/health-trends/:userId/:logType  — MUST be AFTER the /report routes
+// otherwise Express matches "report" as :userId and "30" as :logType
+// =============================================================================
+app.get('/api/health-trends/:userId/:logType', (req, res) => {
+  db.query(
+    `SELECT value, unit, logged_at FROM health_logs
+     WHERE user_id=? AND log_type=?
+       AND logged_at >= DATE_SUB(NOW(), INTERVAL ? DAY)
+     ORDER BY logged_at ASC`,
+    [req.params.userId, req.params.logType, req.query.days || 7],
+    (err, results) => {
+      if (err) return res.status(500).json({ message: 'Error' });
+      res.json(results || []);
+    }
+  );
 });
 
 // =============================================================================

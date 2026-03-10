@@ -147,6 +147,8 @@ const VitalTrendCard: React.FC<{ vital: VitalAnalysis; requestedDays: number }> 
   const sparkVals  = readings.slice(-14).map(r => r.numeric);
   const sparkTrend = trend_line.slice(-14);
   const n          = readings.length;
+  const isSameDay  = (vital as any).same_day === true;
+  const dataNoteStr = (vital as any).data_note || '';
 
   return (
     <View style={[localStyles.card, { borderLeftColor: reg.trend_color }]}>
@@ -195,6 +197,11 @@ const VitalTrendCard: React.FC<{ vital: VitalAnalysis; requestedDays: number }> 
         ))}
       </View>
       <Text style={localStyles.unitNote}>{unit} · {NORMAL_RANGES[log_type]}</Text>
+      {isSameDay && (
+        <View style={localStyles.sameDayBanner}>
+          <Text style={localStyles.sameDayTxt}>📅 Today's readings only — trend shows intra-day change</Text>
+        </View>
+      )}
 
       {/* Expanded section */}
       {open && (
@@ -220,7 +227,7 @@ const VitalTrendCard: React.FC<{ vital: VitalAnalysis; requestedDays: number }> 
 
           <SigBadge sig={reg.significance} note={reg.significance_note} />
 
-          <Text style={localStyles.secHead}>📅 Reading History ({n} readings · {data_window_label})</Text>
+          <Text style={localStyles.secHead}>📅 Reading History ({n} readings · {dataNoteStr || data_window_label})</Text>
           <View style={localStyles.tblHead}>
             <Text style={[localStyles.tblCell, localStyles.tblHd, { flex: 1.4 }]}>Date</Text>
             <Text style={[localStyles.tblCell, localStyles.tblHd]}>Value</Text>
@@ -271,25 +278,41 @@ const CaregiverVitalsTrendScreen: React.FC<Props> = ({ route, navigation }) => {
     setLoading(true);
     setError('');
     setActualWindow(null);
+
+    const url = getApiUrl(`/api/health-trends/report/${elderId}?days=${days}`);
+    console.log('[TREND] ── fetchTrends called ──');
+    console.log('[TREND] elderId:', elderId, '| days:', days);
+    console.log('[TREND] URL:', url);
+
     try {
-      // Pass `days` as a query param — Node will fall back if data is sparse
-      const res  = await fetch(
-        getApiUrl(`/api/health-trends/report/${elderId}?days=${days}`)
-      );
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.message || 'Failed to fetch trends');
+      const res = await fetch(url);
+      console.log('[TREND] HTTP status:', res.status);
+
+      const raw = await res.text();
+      console.log('[TREND] Raw response:', raw.substring(0, 600));
+
+      let data: any;
+      try { data = JSON.parse(raw); }
+      catch { throw new Error('Non-JSON response: ' + raw.substring(0, 100)); }
+
+      if (!res.ok) throw new Error(data.message || `HTTP ${res.status}`);
 
       const arr = Array.isArray(data) ? data : [];
+      console.log('[TREND] Array length:', arr.length);
+      arr.forEach((v: any, i: number) => {
+        console.log(`[TREND] vital[${i}]: log_type=${v.log_type} readings=${v.readings?.length} trend=${v.regression?.trend} same_day=${v.same_day} error=${v.error||'none'}`);
+      });
+      if (arr.length === 0) {
+        console.log('[TREND] ⚠️ Empty array — open browser: http://YOUR_SERVER_IP:3000/api/debug/trend/' + elderId);
+      }
 
-      // Sort by VITAL_ORDER
       const sorted = arr
-        .filter((v: VitalAnalysis) => !v.error || v.error)  // keep all including errors
+        .filter((v: VitalAnalysis) => !v.error || v.error)
         .sort((a: VitalAnalysis, b: VitalAnalysis) =>
           VITAL_ORDER.indexOf(a.log_type) - VITAL_ORDER.indexOf(b.log_type)
         );
       setVitals(sorted);
 
-      // Pick the smallest actual window across all returned vitals
       const windows = sorted
         .map((v: VitalAnalysis) => v.data_window_days)
         .filter((w: number | null) => w !== null && w !== undefined) as number[];
@@ -300,6 +323,7 @@ const CaregiverVitalsTrendScreen: React.FC<Props> = ({ route, navigation }) => {
         }
       }
     } catch (e: any) {
+      console.log('[TREND] ❌ ERROR:', e.message);
       setError(e.message || 'Network error');
     } finally {
       setLoading(false);
@@ -457,6 +481,8 @@ const localStyles = StyleSheet.create({
   tblCell:      { flex: 1, fontSize: 12, color: colors.textPrimary },
   windowBanner: { backgroundColor: '#fff8e1', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 6, marginBottom: 8, borderLeftWidth: 3, borderLeftColor: '#f9a825' },
   windowBannerTxt: { fontSize: 11, color: '#e65100', fontWeight: '600' },
+  sameDayBanner: { backgroundColor: '#e8f4fd', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 6, marginBottom: 4, borderLeftWidth: 3, borderLeftColor: '#0984e3' },
+  sameDayTxt:    { fontSize: 11, color: '#0984e3', fontWeight: '600' },
 });
 
 const screenStyles = StyleSheet.create({
