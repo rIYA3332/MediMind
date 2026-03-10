@@ -15,10 +15,6 @@ interface HealthLog {
   id: number; log_type: string; value: string;
   unit: string; notes: string; logged_at: string;
 }
-interface HealthRisk {
-  id: number; risk_type: string; log_type: string;
-  severity: string; message: string; readings_count: number; detected_at: string;
-}
 interface LatestVital {
   log_type: string; value: string; unit: string; logged_at: string;
 }
@@ -86,18 +82,14 @@ const PERIOD_LABELS: Record<number, string> = {
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-
-/** FIX #4 — correctly labels Today / Yesterday before falling back to locale string */
 function formatDateShort(raw: string): string {
   try {
     const d = new Date(raw);
     if (isNaN(d.getTime())) return raw;
-
     const now   = new Date();
     const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const dDay  = new Date(d.getFullYear(),   d.getMonth(),   d.getDate());
     const diffDays = Math.round((today.getTime() - dDay.getTime()) / 86_400_000);
-
     const time = d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
     if (diffDays === 0) return `Today, ${time}`;
     if (diffDays === 1) return `Yesterday, ${time}`;
@@ -125,11 +117,9 @@ function getReadingStatus(log_type: string, numeric: number): { label: string; c
 function trendEmoji(t: string)  { return t === 'rising' ? '↑' : t === 'falling' ? '↓' : '→'; }
 function capitalize(s: string)  { return s.charAt(0).toUpperCase() + s.slice(1); }
 
-/** FIX #1 — filter readings to only those within the requested day window */
 function filterReadingsByDays(readings: Reading[], days: number): Reading[] {
   const cutoff = Date.now() - days * 86_400_000;
   const filtered = readings.filter(r => new Date(r.date).getTime() >= cutoff);
-  // always show at least 1 reading so the card doesn't appear broken
   return filtered.length > 0 ? filtered : readings.slice(-1);
 }
 
@@ -171,10 +161,8 @@ const VitalTrendCard: React.FC<{ vital: VitalAnalysis; requestedDays: number }> 
     );
   }
 
-  // FIX #1 — only show readings within the selected window
   const windowedReadings = filterReadingsByDays(readings, requestedDays);
   const sparkVals        = windowedReadings.map(r => r.numeric);
-  // align trend_line to the windowed slice
   const startIdx         = readings.length - windowedReadings.length;
   const sparkTrend       = trend_line.slice(startIdx);
 
@@ -187,7 +175,6 @@ const VitalTrendCard: React.FC<{ vital: VitalAnalysis; requestedDays: number }> 
       ? `${reg.trend === 'rising' ? 'Increasing' : 'Decreasing'} by about ${changeAbs} ${unit} per week`
       : 'No significant change week over week';
 
-  // recompute windowed stats
   const nums    = windowedReadings.map(r => r.numeric);
   const wLatest = nums[nums.length - 1] ?? stats.latest;
   const wMin    = Math.min(...nums);
@@ -218,7 +205,6 @@ const VitalTrendCard: React.FC<{ vital: VitalAnalysis; requestedDays: number }> 
 
       <Sparkline values={sparkVals} trendLine={sparkTrend} color={reg.trend_color} />
 
-      {/* Stats strip — uses windowed values */}
       <View style={card.statStrip}>
         {[
           { l: 'Latest',  v: `${wLatest}`, u: unit, c: reg.trend_color },
@@ -264,7 +250,6 @@ const VitalTrendCard: React.FC<{ vital: VitalAnalysis; requestedDays: number }> 
             ))}
           </View>
 
-          {/* FIX #3 — Reading History table with proper column spacing */}
           <Text style={card.secHead}>🕐 Reading History ({n} readings)</Text>
           <View style={card.tblHead}>
             <Text style={[card.tblWhen, card.tblHd]}>When</Text>
@@ -312,7 +297,6 @@ const card = StyleSheet.create({
   friendlyBox:   { backgroundColor: colors.background, borderRadius: 10, padding: 10, alignItems: 'center', flex: 1, minWidth: '40%' },
   friendlyVal:   { fontSize: 14, fontWeight: '700', color: colors.textPrimary, textAlign: 'center' },
   friendlyLbl:   { fontSize: 10, color: colors.textSecondary, marginTop: 3, textAlign: 'center' },
-  // FIX #3 — fixed-width columns so Reading and Status never overlap
   tblHead:       { flexDirection: 'row', paddingBottom: 6, borderBottomWidth: 1.5, borderBottomColor: colors.border },
   tblHd:         { fontWeight: '700', color: colors.textSecondary, fontSize: 10, textTransform: 'uppercase' },
   tblRow:        { flexDirection: 'row', paddingVertical: 8, alignItems: 'center' },
@@ -324,7 +308,7 @@ const card = StyleSheet.create({
   windowBannerTxt: { fontSize: 11, color: '#e65100', fontWeight: '600' },
 });
 
-// ─── Original helpers ─────────────────────────────────────────────────────────
+// ─── Helpers (value status) ───────────────────────────────────────────────────
 const vitalConfig: Record<string, { icon: string; label: string; unit: string; normalRange: string; trendLabel: string }> = {
   blood_pressure: { icon: '🩺', label: 'Blood Pressure', unit: 'mmHg', normalRange: '90-120 / 60-80', trendLabel: '7-Day BP Trend' },
   blood_sugar:    { icon: '🩸', label: 'Blood Sugar',    unit: 'mg/dL', normalRange: '70-140',         trendLabel: '7-Day Sugar Trend' },
@@ -366,33 +350,62 @@ const HealthStatusScreen = ({ route, navigation }: any) => {
   const { elderId, elderName } = route.params || {};
   const [latestVitals, setLatestVitals] = useState<LatestVital[]>([]);
   const [recentLogs,   setRecentLogs]   = useState<HealthLog[]>([]);
-  const [risks,        setRisks]        = useState<HealthRisk[]>([]);
+  const [risks,        setRisks]        = useState<string[]>([]);
   const [loading,      setLoading]      = useState(true);
   const [refreshing,   setRefreshing]   = useState(false);
+  const [riskLoading,  setRiskLoading]  = useState(false);
 
   const [vitals,       setVitals]       = useState<VitalAnalysis[]>([]);
   const [trendLoading, setTrendLoading] = useState(true);
   const [trendDays,    setTrendDays]    = useState<7 | 14 | 30>(30);
   const [actualWindow, setActualWindow] = useState<string | null>(null);
 
-  useEffect(() => { if (elderId) fetchHealthData(); }, [elderId]);
+  const fetchRFRisks = useCallback(async () => {
+    if (!elderId) return;
+    setRiskLoading(true);
+    try {
+      const res = await fetch(getApiUrl(`/api/health-risks/ai/${elderId}`));
+      const contentType = res.headers.get('content-type') || '';
+      if (!contentType.includes('application/json')) {
+        console.warn('RF risk endpoint returned non-JSON response (status:', res.status, ')');
+        setRisks([]);
+        return;
+      }
+      if (!res.ok) {
+        console.warn('RF risk endpoint error:', res.status);
+        setRisks([]);
+        return;
+      }
+      const data = await res.json();
+      // assessment.reasons is string[] from _build_risk_detail in views.py
+      const rfRisks: string[] = data?.assessment?.reasons || [];
+      setRisks(rfRisks);
+    } catch (e) {
+      console.log('RF risk fetch error:', e);
+      setRisks([]);
+    } finally {
+      setRiskLoading(false);
+    }
+  }, [elderId]);
 
   const fetchHealthData = async () => {
     setLoading(true);
     try {
-      const [latestRes, logsRes, risksRes] = await Promise.all([
+      const [latestRes, logsRes] = await Promise.all([
         fetch(getApiUrl(`/api/health-logs/latest/${elderId}`)),
         fetch(getApiUrl(`/api/health-logs/${elderId}`)),
-        fetch(getApiUrl(`/api/health-risks/${elderId}`)),
       ]);
-      const [latestData, logsData, risksData] = await Promise.all([
-        latestRes.json(), logsRes.json(), risksRes.json(),
+      const [latestData, logsData] = await Promise.all([
+        latestRes.json(), logsRes.json(),
       ]);
       setLatestVitals(Array.isArray(latestData) ? latestData : []);
       setRecentLogs(Array.isArray(logsData) ? logsData.slice(0, 20) : []);
-      setRisks(Array.isArray(risksData) ? risksData : []);
-    } catch (e) { console.log('Fetch error', e); }
-    finally { setLoading(false); setRefreshing(false); }
+    } catch (e) {
+      console.log('Fetch error', e);
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
   };
 
   const fetchTrends = useCallback(async () => {
@@ -417,21 +430,20 @@ const HealthStatusScreen = ({ route, navigation }: any) => {
     finally { setTrendLoading(false); }
   }, [elderId, trendDays]);
 
+  useEffect(() => {
+    if (elderId) {
+      fetchHealthData();
+      fetchRFRisks();
+    }
+  }, [elderId]);
+
   useEffect(() => { if (elderId) fetchTrends(); }, [fetchTrends]);
 
-  const onRefresh = () => { setRefreshing(true); fetchHealthData(); fetchTrends(); };
-
-  const formatDate = (dateString: string) => {
-    // reuse the same Today/Yesterday logic
-    return formatDateShort(dateString);
-  };
-
-  const getSeverityStyle = (severity: string) => {
-    switch (severity) {
-      case 'critical': return { bg: '#fff0f0', border: '#ff4757', text: '#ff4757', label: '🚨 CRITICAL' };
-      case 'danger':   return { bg: '#fff5f0', border: '#e17055', text: '#e17055', label: '⚠️ DANGER' };
-      default:         return { bg: '#fffdf0', border: '#fdcb6e', text: '#856404', label: '⚠️ WARNING' };
-    }
+  const onRefresh = () => {
+    setRefreshing(true);
+    fetchHealthData();
+    fetchRFRisks();
+    fetchTrends();
   };
 
   const vitalsMap: Record<string, LatestVital> = {};
@@ -466,26 +478,35 @@ const HealthStatusScreen = ({ route, navigation }: any) => {
         </TouchableOpacity>
       </View>
 
-      <ScrollView style={styles.content}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.primary} />}>
+      <ScrollView
+        style={styles.content}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.primary} />}
+      >
 
-        {/* Active Risks Banner */}
-        {risks.length > 0 && (
+        {/* ── AI Risk Assessment Banner ─────────────────────────────────────── */}
+        {riskLoading ? (
+          <View style={styles.riskLoadingRow}>
+            <ActivityIndicator size="small" color="#e17055" />
+            <Text style={styles.riskLoadingTxt}>Analysing health risks…</Text>
+          </View>
+        ) : risks.length > 0 ? (
           <View style={styles.risksBanner}>
-            <Text style={styles.risksBannerTitle}>⚠️ {risks.length} Active Health Risk{risks.length > 1 ? 's' : ''}</Text>
-            {risks.slice(0, 2).map((risk) => {
-              const s = getSeverityStyle(risk.severity);
-              return (
-                <View key={risk.id} style={[styles.riskItem, { borderLeftColor: s.border, backgroundColor: s.bg }]}>
-                  <Text style={[styles.riskSeverityLabel, { color: s.text }]}>{s.label}</Text>
-                  <Text style={styles.riskMessage}>{risk.message}</Text>
-                </View>
-              );
-            })}
+            <Text style={styles.risksBannerTitle}>
+              🤖 AI Risk Assessment · {risks.length} concern{risks.length > 1 ? 's' : ''} detected
+            </Text>
+            {risks.map((reason, index) => (
+              <View key={index} style={[styles.riskItem, { borderLeftColor: '#e17055', backgroundColor: '#fff5f0' }]}>
+                <Text style={styles.riskMessage}>{reason}</Text>
+              </View>
+            ))}
+          </View>
+        ) : (
+          <View style={styles.risksClear}>
+            <Text style={styles.risksClearTxt}>✅ AI Risk Assessment — No critical concerns detected</Text>
           </View>
         )}
 
-        {/* Vital Signs header row with period toggle */}
+        {/* ── Vital Signs header row with period toggle ─────────────────────── */}
         <View style={styles.trendHeaderRow}>
           <Text style={styles.sectionLabel}>Vital Signs</Text>
           <View style={styles.periodRow}>
@@ -499,7 +520,7 @@ const HealthStatusScreen = ({ route, navigation }: any) => {
           </View>
         </View>
 
-        {/* FIX #2 — Rising alert with bottom margin so overview has breathing room */}
+        {/* Rising alert */}
         {!trendLoading && risingList.length > 0 && (
           <View style={styles.alertBanner}>
             <Text style={styles.alertTxt}>
@@ -524,7 +545,6 @@ const HealthStatusScreen = ({ route, navigation }: any) => {
           <Card style={styles.emptyCard}><Text style={styles.emptyText}>No vital signs recorded yet</Text></Card>
         ) : (
           <View style={{ paddingHorizontal: 15 }}>
-            {/* FIX #2 — Overview card with explicit top + bottom margin */}
             <View style={styles.summaryCard}>
               <Text style={styles.summaryTitle}>📈 Overview · {PERIOD_LABELS[trendDays]}</Text>
               <Text style={styles.summaryHint}>Tap any card below for full details</Text>
@@ -564,7 +584,7 @@ const HealthStatusScreen = ({ route, navigation }: any) => {
                     <Text style={styles.logIcon}>{cfg?.icon || '📊'}</Text>
                     <View style={styles.logInfo}>
                       <Text style={styles.logType}>{cfg?.label || log.log_type}</Text>
-                      <Text style={styles.logDate}>{formatDate(log.logged_at)}</Text>
+                      <Text style={styles.logDate}>{formatDateShort(log.logged_at)}</Text>
                     </View>
                     <View style={[styles.logBadge, { backgroundColor: ss.bg }]}>
                       <Text style={[styles.logBadgeText, { color: ss.text }]}>{log.value} {log.unit}</Text>
@@ -597,11 +617,17 @@ const styles = StyleSheet.create({
   loadingText:       { marginTop: 12, color: colors.textSecondary },
   content:           { flex: 1 },
   sectionLabel:      { fontSize: 14, fontWeight: '700', color: colors.textPrimary, paddingHorizontal: 15, paddingTop: 16, paddingBottom: 8 },
+
+  riskLoadingRow:    { flexDirection: 'row', alignItems: 'center', gap: 8, margin: 15, marginBottom: 0 },
+  riskLoadingTxt:    { fontSize: 12, color: '#e17055' },
   risksBanner:       { margin: 15, marginBottom: 0 },
-  risksBannerTitle:  { fontSize: 14, fontWeight: 'bold', color: '#e17055', marginBottom: 8 },
+  risksBannerTitle:  { fontSize: 13, fontWeight: 'bold', color: '#e17055', marginBottom: 8 },
   riskItem:          { borderLeftWidth: 4, padding: 10, borderRadius: 8, marginBottom: 8 },
   riskSeverityLabel: { fontSize: 11, fontWeight: 'bold', marginBottom: 4 },
   riskMessage:       { fontSize: 12, color: colors.textPrimary, lineHeight: 17 },
+  risksClear:        { margin: 15, marginBottom: 0, backgroundColor: '#f0fdf4', borderRadius: 10, padding: 12, borderLeftWidth: 4, borderLeftColor: '#00b894' },
+  risksClearTxt:     { fontSize: 12, color: '#00b894', fontWeight: '600' },
+
   emptyCard:         { marginHorizontal: 15 },
   emptyText:         { textAlign: 'center', color: colors.textSecondary, fontSize: 14, paddingVertical: 20 },
   logRow:            { flexDirection: 'row', alignItems: 'center', paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: colors.border },
@@ -611,8 +637,6 @@ const styles = StyleSheet.create({
   logDate:           { fontSize: 11, color: colors.textSecondary, marginTop: 2 },
   logBadge:          { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 8 },
   logBadgeText:      { fontSize: 12, fontWeight: 'bold' },
-  // Trend section
-  // FIX #2 — alert has marginBottom so overview card is clearly separated
   alertBanner:       { backgroundColor: '#fff3cd', borderWidth: 1, borderColor: '#ffc107', padding: 12, marginHorizontal: 15, marginTop: 8, marginBottom: 14, borderRadius: 10 },
   alertTxt:          { color: '#856404', fontSize: 13, fontWeight: '600', lineHeight: 18 },
   windowNotice:      { backgroundColor: '#fff3e0', paddingHorizontal: 15, paddingVertical: 8, marginTop: 4, marginBottom: 8 },
@@ -623,7 +647,6 @@ const styles = StyleSheet.create({
   periodBtnOn:       { backgroundColor: colors.primary, borderColor: colors.primary },
   periodTxt:         { fontSize: 11, fontWeight: '700', color: colors.textSecondary },
   periodTxtOn:       { color: '#fff' },
-  // FIX #2 — overview card top + bottom margin gives clear separation from alert and first vital card
   summaryCard:       { backgroundColor: colors.white, borderRadius: 14, padding: 16, marginBottom: 16, borderWidth: 1, borderColor: colors.border },
   summaryTitle:      { fontSize: 14, fontWeight: '700', color: colors.textPrimary, marginBottom: 4 },
   summaryHint:       { fontSize: 11, color: colors.textSecondary, marginBottom: 12, fontStyle: 'italic' },

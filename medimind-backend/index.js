@@ -21,6 +21,15 @@ db.connect((err) => {
 });
 
 // =============================================================================
+// PROMISE WRAPPER HELPER
+// =============================================================================
+function dbQuery(sql, params = []) {
+  return new Promise((resolve, reject) => {
+    db.query(sql, params, (err, rows) => err ? reject(err) : resolve(rows || []));
+  });
+}
+
+// =============================================================================
 // PUSH NOTIFICATIONS via Expo
 // =============================================================================
 async function sendPushNotification(expoPushToken, title, body, data = {}) {
@@ -199,7 +208,6 @@ function toScheduleShape(row) {
   };
 }
 
-// Helper: builds a safe parameterised date WHERE clause and pushes the param.
 function buildDateClause(col, dateFilter, days, params) {
   if (dateFilter) {
     params.push(dateFilter);
@@ -209,6 +217,10 @@ function buildDateClause(col, dateFilter, days, params) {
   return `AND ${col} >= DATE_SUB(NOW(), INTERVAL ? DAY)`;
 }
 
+function tryParse(str, fallback) {
+  try { return JSON.parse(str); } catch (_) { return fallback; }
+}
+
 // =============================================================================
 // CRON JOB — runs every minute
 // =============================================================================
@@ -216,7 +228,6 @@ cron.schedule('* * * * *', () => {
   const todayISO = new Date().toISOString().split('T')[0];
   const nowTime  = new Date().toTimeString().slice(0, 5);
 
-  // Step 1: Wake expired snoozes
   db.query(
     `UPDATE medication_intake
      SET status = 'pending', snooze_until = NULL
@@ -227,7 +238,6 @@ cron.schedule('* * * * *', () => {
     (err) => { if (err) console.log('[CRON] snooze expiry error:', err.message); }
   );
 
-  // Step 2: Find schedules due now
   db.query(
     `SELECT
        m.id           AS medId,
@@ -297,7 +307,6 @@ cron.schedule('* * * * *', () => {
               if (diffMins < intervalMins) return;
             }
 
-            // OVERDUE
             if (attemptCount >= maxReminders) {
               db.query(
                 `SELECT id FROM medication_intake
@@ -370,7 +379,6 @@ cron.schedule('* * * * *', () => {
               return;
             }
 
-            // REMIND
             const attemptNum = attemptCount + 1;
             const isFirst    = attemptNum === 1;
 
@@ -674,6 +682,7 @@ app.post('/api/health-logs', (req, res) => {
       logActivity(userId, 'health_log', `Logged ${label}: ${value} ${unit}`);
       notifyCaregivers(userId, 'health_log', `📊 New health log: ${label} — ${value} ${unit}${notes ? ` (${notes})` : ''}`, 'low');
       checkHealthRisks(userId, logType, value, unit);
+      runRiskAssessment(userId, 'vital_logged').catch(() => {});
       res.json({ message: 'Health data logged', logId: result.insertId });
     }
   );
@@ -720,9 +729,6 @@ app.get('/api/health-summary/:userId', (req, res) => {
   );
 });
 
-// NOTE: /api/health-trends/:userId/:logType MOVED to after the report routes
-// below so Express does not greedily match "report" as a userId.
-
 // =============================================================================
 // DJANGO REGRESSION SERVICE
 // =============================================================================
@@ -764,8 +770,6 @@ async function callDjangoRegressionSingle(log_type, readings) {
 // =============================================================================
 // REGRESSION HELPERS — progressive date-window fallback
 // =============================================================================
-
-// Group flat rows by log_type → { heart_rate: [{date, value}, ...], ... }
 function groupByLogType(rows) {
   const g = {};
   rows.forEach(r => {
@@ -775,11 +779,7 @@ function groupByLogType(rows) {
   return g;
 }
 
-// Fetch ALL vitals for an elder, trying progressively smaller windows until
-// at least one vital type has ≥ 2 readings.
-// Returns { rows, windowDays } or null if truly no data.
 async function fetchAllVitalsWithFallback(elderId, preferredDays) {
-  // Build deduplicated, descending list of windows to try
   const FALLBACK_WINDOWS = [preferredDays, 30, 14, 7]
     .filter((v, i, arr) => arr.indexOf(v) === i && v > 0)
     .sort((a, b) => b - a);
@@ -805,7 +805,6 @@ async function fetchAllVitalsWithFallback(elderId, preferredDays) {
     if (validTypes.length > 0) return { rows, windowDays: days };
   }
 
-  // Last resort: latest 20 readings per vital, regardless of date
   const rows = await new Promise((resolve) => {
     db.query(
       `SELECT log_type, value, unit, DATE(logged_at) AS date
@@ -817,7 +816,6 @@ async function fetchAllVitalsWithFallback(elderId, preferredDays) {
     );
   });
 
-  // Limit to 20 per type and reverse so oldest-first
   const grouped     = groupByLogType(rows);
   const limitedRows = [];
   Object.entries(grouped).forEach(([logType, arr]) => {
@@ -829,8 +827,6 @@ async function fetchAllVitalsWithFallback(elderId, preferredDays) {
   return limitedRows.length >= 2 ? { rows: limitedRows, windowDays: null } : null;
 }
 
-// Fetch a SINGLE vital with progressive fallback.
-// Returns { rows, windowDays } or null.
 async function fetchSingleVitalWithFallback(elderId, logType, preferredDays) {
   const FALLBACK_WINDOWS = [preferredDays, 30, 14, 7]
     .filter((v, i, arr) => arr.indexOf(v) === i && v > 0)
@@ -856,7 +852,6 @@ async function fetchSingleVitalWithFallback(elderId, logType, preferredDays) {
     if (rows.length >= 2) return { rows, windowDays: days };
   }
 
-  // Last resort: most recent 20 readings ever
   const rows = await new Promise((resolve) => {
     db.query(
       `SELECT value, DATE(logged_at) AS date
@@ -873,8 +868,6 @@ async function fetchSingleVitalWithFallback(elderId, logType, preferredDays) {
 
 // =============================================================================
 // GET /api/health-trends/report/:elderId
-// All-vitals batch regression with progressive fallback.
-// Query params: days (default 30)
 // =============================================================================
 app.get('/api/health-trends/report/:elderId', async (req, res) => {
   const { elderId } = req.params;
@@ -883,12 +876,11 @@ app.get('/api/health-trends/report/:elderId', async (req, res) => {
   const result = await fetchAllVitalsWithFallback(elderId, preferredDays);
 
   if (!result || !result.rows || !result.rows.length) {
-    return res.json([]);  // No data at all — frontend shows empty state
+    return res.json([]);
   }
 
   const { rows, windowDays } = result;
 
-  // Group and filter: each vital needs ≥ 2 readings for linregress
   const grouped       = groupByLogType(rows);
   const vitalsPayload = Object.entries(grouped)
     .filter(([, readings]) => readings.length >= 2)
@@ -903,7 +895,6 @@ app.get('/api/health-trends/report/:elderId', async (req, res) => {
     });
   }
 
-  // Attach actual window metadata so the frontend can display a notice
   const enriched = regressionResults.map(vital => ({
     ...vital,
     data_window_days:  windowDays,
@@ -915,8 +906,6 @@ app.get('/api/health-trends/report/:elderId', async (req, res) => {
 
 // =============================================================================
 // GET /api/health-trends/report/:elderId/:logType
-// Single-vital regression with progressive fallback.
-// Query params: days (default 30)
 // =============================================================================
 app.get('/api/health-trends/report/:elderId/:logType', async (req, res) => {
   const { elderId, logType } = req.params;
@@ -945,8 +934,7 @@ app.get('/api/health-trends/report/:elderId/:logType', async (req, res) => {
 });
 
 // =============================================================================
-// GET /api/health-trends/:userId/:logType  — MUST be AFTER the /report routes
-// otherwise Express matches "report" as :userId and "30" as :logType
+// GET /api/health-trends/:userId/:logType — MUST be AFTER the /report routes
 // =============================================================================
 app.get('/api/health-trends/:userId/:logType', (req, res) => {
   db.query(
@@ -1091,8 +1079,191 @@ app.get('/api/reminder-count/:medicationId/:userId', (req, res) => {
 });
 
 // =============================================================================
-// HEALTH RISKS
+// HEALTH RISKS HELPERS
 // =============================================================================
+function safeFloat(val, fallback = 0) {
+  const n = parseFloat(val);
+  return isNaN(n) ? fallback : n;
+}
+function parseSystolic(val) {
+  if (!val) return 120;
+  const parts = String(val).split('/');
+  return safeFloat(parts[0], 120);
+}
+function parseDiastolic(val) {
+  if (!val) return 80;
+  const parts = String(val).split('/');
+  return safeFloat(parts[1] || parts[0], 80);
+}
+
+// =============================================================================
+// HEALTH RISKS
+// IMPORTANT: /ai/:elderId MUST be registered BEFORE /:elderId
+// Otherwise Express matches :elderId = "ai" and the AI route is never reached
+// =============================================================================
+
+// ── GET /api/health-risks/ai/:elderId ── RF assessment (REGISTERED FIRST) ───
+app.get('/api/health-risks/ai/:elderId', async (req, res) => {
+  const elderId = parseInt(req.params.elderId);
+  if (!elderId) return res.status(400).json({ message: 'Invalid elderId' });
+
+  try {
+    const now   = new Date();
+    const ago30 = new Date(now - 30 * 24 * 60 * 60 * 1000);
+    const ago7  = new Date(now - 7  * 24 * 60 * 60 * 1000);
+    const fmt   = d => d.toISOString().slice(0, 19).replace('T', ' ');
+
+    // Latest vitals
+    const latestVitals = await dbQuery(
+      `SELECT log_type, value, logged_at
+       FROM health_logs
+       WHERE user_id = ? AND logged_at >= ?
+       ORDER BY logged_at DESC`,
+      [elderId, fmt(ago30)]
+    );
+    const byType = {};
+    latestVitals.forEach(r => { if (!byType[r.log_type]) byType[r.log_type] = r; });
+
+    const bp          = byType['blood_pressure'];
+    const bpSys       = bp ? parseSystolic(bp.value)  : 120;
+    const bpDia       = bp ? parseDiastolic(bp.value) : 80;
+    const bloodSugar  = safeFloat(byType['blood_sugar']?.value,   100);
+    const heartRate   = safeFloat(byType['heart_rate']?.value,     72);
+    const temperature = safeFloat(byType['temperature']?.value,  98.6);
+
+    // Weight change
+    const weightRows = await dbQuery(
+      `SELECT value FROM health_logs
+       WHERE user_id = ? AND log_type = 'weight'
+       ORDER BY logged_at DESC LIMIT 2`,
+      [elderId]
+    );
+    const weightChange = weightRows.length >= 2
+      ? safeFloat(weightRows[0].value) - safeFloat(weightRows[1].value)
+      : 0;
+
+    // Days since last reading
+    const lastReadingRows = await dbQuery(
+      `SELECT MAX(logged_at) AS last_at FROM health_logs WHERE user_id = ?`,
+      [elderId]
+    );
+    const lastAt = lastReadingRows[0]?.last_at;
+    const daysSinceLastReading = lastAt
+      ? Math.floor((now - new Date(lastAt)) / (1000 * 60 * 60 * 24))
+      : 7;
+
+    // Reading count last 7 days
+    const readingCount7dRows = await dbQuery(
+      `SELECT COUNT(*) AS cnt FROM health_logs WHERE user_id = ? AND logged_at >= ?`,
+      [elderId, fmt(ago7)]
+    );
+    const readingCount7d = readingCount7dRows[0]?.cnt || 0;
+
+    // Rule-based risk flags last 7 days
+    const flagRows = await dbQuery(
+      `SELECT COUNT(*) AS cnt FROM health_risks WHERE elder_id = ? AND detected_at >= ?`,
+      [elderId, fmt(ago7)]
+    );
+    const riskFlagCount7d = flagRows[0]?.cnt || 0;
+
+    // Medication adherence
+    let missedDoses7d = 0, missedDosesStreak = 0, medicationAdherencePct = 100;
+    try {
+      const medRows = await dbQuery(
+        `SELECT DATE(taken_at) AS day, status
+         FROM medication_intake
+         WHERE user_id = ? AND taken_at >= ?
+         ORDER BY taken_at DESC`,
+        [elderId, fmt(ago7)]
+      );
+      if (medRows.length > 0) {
+        const missed = medRows.filter(r => r.status === 'missed' || r.status === 'not_taken');
+        const taken  = medRows.filter(r => r.status === 'taken');
+        missedDoses7d          = missed.length;
+        medicationAdherencePct = Math.round((taken.length / medRows.length) * 100);
+        const missedDays = new Set(missed.map(r => new Date(r.day).toISOString().slice(0, 10)));
+        let streak = 0;
+        for (let i = 0; i < 7; i++) {
+          const d = new Date(now);
+          d.setDate(d.getDate() - i);
+          if (missedDays.has(d.toISOString().slice(0, 10))) streak++;
+          else break;
+        }
+        missedDosesStreak = streak;
+      }
+    } catch (_) {}
+
+    // Missed reminders last 7 days
+    let missedReminders7d = 0, reminderAdherencePct = 100;
+    try {
+      const remRows = await dbQuery(
+        `SELECT COUNT(*) AS total,
+                SUM(CASE WHEN status = 'responded' THEN 1 ELSE 0 END) AS ack
+         FROM reminder_logs
+         WHERE user_id = ? AND sent_at >= ?`,
+        [elderId, fmt(ago7)]
+      );
+      const total = parseInt(remRows[0]?.total) || 0;
+      const ack   = parseInt(remRows[0]?.ack)   || 0;
+      if (total > 0) {
+        missedReminders7d    = total - ack;
+        reminderAdherencePct = Math.round((ack / total) * 100);
+      }
+    } catch (_) {}
+
+    // Build feature payload for Django RF model
+    const featurePayload = {
+      elder_id:                 elderId,
+      bp_sys:                   bpSys,
+      bp_dia:                   bpDia,
+      blood_sugar:              bloodSugar,
+      heart_rate:               heartRate,
+      temperature:              temperature,
+      weight_change:            weightChange,
+      missed_doses_7d:          missedDoses7d,
+      missed_doses_streak:      missedDosesStreak,
+      medication_adherence_pct: medicationAdherencePct,
+      missed_routines_7d:       0,
+      routine_adherence_pct:    100,
+      missed_reminders_7d:      missedReminders7d,
+      reminder_adherence_pct:   reminderAdherencePct,
+      missed_appointments_7d:   0,
+      total_missed_7d:          missedDoses7d + missedReminders7d,
+      days_since_last_reading:  daysSinceLastReading,
+      reading_count_7d:         readingCount7d,
+      risk_flag_count_7d:       riskFlagCount7d,
+    };
+
+    // Call Django RF model
+    const djangoResp = await fetch(`${DJANGO_REGRESSION_URL}/api/regression/risk/assess/`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(featurePayload),
+    });
+
+    if (!djangoResp.ok) {
+      const errText = await djangoResp.text();
+      console.error('[AI risk] Django error:', djangoResp.status, errText);
+      return res.status(502).json({ error: 'Risk model service error', detail: errText });
+    }
+
+    const djangoData = await djangoResp.json();
+
+    // Forward assessment as-is — screen reads data.assessment.risks
+    return res.json({
+      elder_id:     elderId,
+      assessment:   djangoData.assessment,
+      features:     featurePayload,
+      generated_at: new Date().toISOString(),
+    });
+
+  } catch (err) {
+    console.error('AI risk assessment error:', err);
+    return res.status(500).json({ error: 'Internal server error', detail: err.message });
+  }
+});
+
+// ── GET /api/health-risks/:elderId ── rule-based (REGISTERED AFTER /ai/) ────
 app.get('/api/health-risks/:elderId', (req, res) => {
   db.query(
     `SELECT * FROM health_risks WHERE elder_id=? AND resolved=0 ORDER BY detected_at DESC`,
@@ -2506,7 +2677,353 @@ app.get('/api/adherence/summary/:elderId', (req, res) => {
 });
 
 // =============================================================================
+// AI RISK DETECTION — buildRiskPayload helper
+// =============================================================================
+async function buildRiskPayload(elderId) {
+  return new Promise((resolve, reject) => {
+    db.query(
+      `SELECT log_type, value FROM health_logs h1
+       WHERE user_id = ?
+         AND logged_at = (SELECT MAX(logged_at) FROM health_logs h2
+                          WHERE h2.user_id = h1.user_id AND h2.log_type = h1.log_type)`,
+      [elderId],
+      (err, vitalRows) => {
+        if (err) return reject(err);
+
+        const vitals = {};
+        (vitalRows || []).forEach(r => { vitals[r.log_type] = r.value; });
+
+        db.query(
+          `SELECT log_type, value, DATE(logged_at) AS date
+           FROM health_logs
+           WHERE user_id = ? AND logged_at >= DATE_SUB(NOW(), INTERVAL 14 DAY)
+           ORDER BY log_type, logged_at ASC`,
+          [elderId],
+          async (err2, trendRows) => {
+            if (err2) return reject(err2);
+
+            let trends = {};
+            const grouped = {};
+            (trendRows || []).forEach(r => {
+              if (!grouped[r.log_type]) grouped[r.log_type] = [];
+              grouped[r.log_type].push({ date: r.date, value: r.value });
+            });
+            const vitalsPayload = Object.entries(grouped)
+              .filter(([, arr]) => arr.length >= 2)
+              .map(([log_type, readings]) => ({ log_type, readings }));
+
+            if (vitalsPayload.length > 0) {
+              const rr = await callDjangoRegressionBatch(vitalsPayload).catch(() => null);
+              if (rr) rr.forEach(r => { trends[r.log_type] = r.regression?.trend || 'stable'; });
+            }
+
+            const today    = new Date().toISOString().split('T')[0];
+            const sevenAgo = new Date(Date.now() - 7 * 864e5).toISOString().split('T')[0];
+
+            db.query(
+              `SELECT
+                 COUNT(*) AS total_intakes,
+                 SUM(CASE WHEN status='taken'   THEN 1 ELSE 0 END) AS taken,
+                 SUM(CASE WHEN status='partial' THEN 0.5 ELSE 0 END) AS partial,
+                 SUM(CASE WHEN is_overdue=1     THEN 1 ELSE 0 END) AS overdue
+               FROM medication_intake
+               WHERE user_id=? AND DATE(taken_at) BETWEEN ? AND ?`,
+              [elderId, sevenAgo, today],
+              (err3, adhRows) => {
+                if (err3) return reject(err3);
+
+                const adh    = adhRows && adhRows[0] ? adhRows[0] : {};
+                const total  = parseInt(adh.total_intakes) || 0;
+                const done   = parseFloat(adh.taken || 0) + parseFloat(adh.partial || 0);
+                const pct7d  = total > 0 ? Math.round((done / total) * 100) : 100;
+                const missed7d = total - Math.round(done);
+
+                db.query(
+                  `SELECT COUNT(*) AS cnt FROM medication_intake
+                   WHERE user_id=? AND is_overdue=1 AND DATE(taken_at)=CURDATE()`,
+                  [elderId],
+                  (err4, ovRows) => {
+                    const overdueToday = ovRows && ovRows[0] ? parseInt(ovRows[0].cnt) || 0 : 0;
+
+                    db.query(
+                      `SELECT DATE(taken_at) AS d,
+                              MAX(CASE WHEN status='taken' OR status='partial' THEN 1 ELSE 0 END) AS had_dose
+                       FROM medication_intake
+                       WHERE user_id=? AND DATE(taken_at) >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)
+                       GROUP BY DATE(taken_at)
+                       ORDER BY d DESC`,
+                      [elderId],
+                      (err5, doseRows) => {
+                        let consecutiveMissed = 0;
+                        for (const row of (doseRows || [])) {
+                          if (!parseInt(row.had_dose)) consecutiveMissed++;
+                          else break;
+                        }
+
+                        db.query(
+                          `SELECT COUNT(*) AS cnt FROM health_risks
+                           WHERE elder_id=? AND resolved=0`,
+                          [elderId],
+                          (err6, riskRows) => {
+                            const activeRisks = riskRows && riskRows[0]
+                              ? parseInt(riskRows[0].cnt) || 0 : 0;
+
+                            db.query(
+                              `SELECT DATEDIFF(CURDATE(), DATE(MAX(logged_at))) AS days_ago
+                               FROM health_logs WHERE user_id=?`,
+                              [elderId],
+                              (err7, logRows) => {
+                                const daysSinceLog = logRows && logRows[0]
+                                  ? parseInt(logRows[0].days_ago) || 0 : 30;
+
+                                db.query(
+                                  `SELECT
+                                     COUNT(m.id)                                          AS total_today,
+                                     SUM(CASE WHEN mi.status='taken' OR mi.status='partial'
+                                              THEN 1 ELSE 0 END)                          AS done_today
+                                   FROM medications m
+                                   LEFT JOIN medication_intake mi
+                                     ON mi.medication_id=m.id AND mi.user_id=m.user_id
+                                     AND DATE(mi.taken_at)=CURDATE()
+                                   WHERE m.user_id=? AND m.notes IS NOT NULL`,
+                                  [elderId],
+                                  (err8, schRows) => {
+                                    const sch      = schRows && schRows[0] ? schRows[0] : {};
+                                    const schTotal = parseInt(sch.total_today) || 0;
+                                    const schDone  = parseInt(sch.done_today)  || 0;
+                                    const schPct   = schTotal > 0
+                                      ? Math.round((schDone / schTotal) * 100) : 100;
+
+                                    resolve({
+                                      elder_id: elderId,
+                                      vitals,
+                                      trends,
+                                      adherence: {
+                                        pct_7d:              pct7d,
+                                        missed_7d:           Math.max(missed7d, 0),
+                                        overdue_today:       overdueToday,
+                                        consecutive_missed:  consecutiveMissed,
+                                        total_risks:         activeRisks,
+                                      },
+                                      schedule: {
+                                        completed_today_pct: schPct,
+                                      },
+                                      days_since_log: daysSinceLog,
+                                    });
+                                  }
+                                );
+                              }
+                            );
+                          }
+                        );
+                      }
+                    );
+                  }
+                );
+              }
+            );
+          }
+        );
+      }
+    );
+  });
+}
+
+async function callDjangoRiskAssess(payload) {
+  try {
+    const resp = await fetch(`${DJANGO_REGRESSION_URL}/api/regression/risk/assess/`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(payload),
+    });
+    if (!resp.ok) { console.error('[risk] Django returned', resp.status); return null; }
+    return await resp.json();
+  } catch (err) {
+    console.error('[risk] Django call failed:', err.message);
+    return null;
+  }
+}
+
+// =============================================================================
+// RISK DETECTION CORE — run assessment for one elder, save, alert caregivers
+// =============================================================================
+async function runRiskAssessment(elderId, trigger = 'cron') {
+  try {
+    const payload = await buildRiskPayload(elderId);
+    const result  = await callDjangoRiskAssess(payload);
+    if (!result) return;
+
+    const score      = result.risk_score;
+    const level      = result.risk_level;
+    const isCritical = result.is_critical;
+
+    db.query(
+      `INSERT INTO ai_risk_scores
+         (elder_id, risk_score, risk_level, is_critical, alert_message,
+          alert_reasons, top_factors, trigger_source, assessed_at)
+       VALUES (?,?,?,?,?,?,?,?,NOW())`,
+      [
+        elderId, score, level, isCritical ? 1 : 0,
+        result.alert_message,
+        JSON.stringify(result.alert_reasons || []),
+        JSON.stringify(result.top_factors   || []),
+        trigger,
+      ],
+      (dbErr) => {
+        if (dbErr) {
+          console.log('[risk] DB insert error (run migration first):', dbErr.message);
+        }
+      }
+    );
+
+    if (score < 40) return result;
+
+    const priority  = isCritical ? 'critical' : 'high';
+    const alertType = 'ai_risk';
+    const message   = result.alert_message;
+
+    db.query(
+      `SELECT requester_id FROM connections WHERE elder_id=? AND status='approved'`,
+      [elderId],
+      (err, cgs) => {
+        if (err || !cgs || !cgs.length) return;
+
+        const vals = cgs.map(c => [elderId, c.requester_id, alertType, message, 0, priority, new Date()]);
+        db.query(
+          `INSERT INTO alerts (user_id,caregiver_id,alert_type,message,is_read,priority,created_at) VALUES ?`,
+          [vals],
+          () => {}
+        );
+
+        cgs.forEach(c => {
+          sendCaregiverPush(
+            c.requester_id,
+            result.alert_title,
+            message
+          );
+        });
+
+        console.log(`[RISK] Elder ${elderId} — score ${score}% (${level})${isCritical ? ' ⚠️ CRITICAL' : ''} | ${trigger}`);
+      }
+    );
+
+    return result;
+  } catch (err) {
+    console.error(`[risk] Assessment failed for elder ${elderId}:`, err.message);
+  }
+}
+
+// =============================================================================
+// CRON — Run risk assessment for ALL elders every 6 hours
+// =============================================================================
+cron.schedule('0 */6 * * *', async () => {
+  console.log('[RISK CRON] Running scheduled AI risk assessment for all elders…');
+  db.query(`SELECT DISTINCT id FROM users WHERE role='elderly'`, [], async (err, rows) => {
+    if (err || !rows) return;
+    for (const row of rows) {
+      await runRiskAssessment(row.id, 'scheduled_cron');
+      await new Promise(r => setTimeout(r, 500));
+    }
+    console.log(`[RISK CRON] Done — assessed ${rows.length} elder(s)`);
+  });
+});
+
+// =============================================================================
+// ROUTE: POST /api/risk/assess/:elderId — Manual trigger
+// =============================================================================
+app.post('/api/risk/assess/:elderId', async (req, res) => {
+  const { elderId } = req.params;
+  try {
+    const result = await runRiskAssessment(elderId, 'manual_trigger');
+    if (!result) return res.status(503).json({ message: 'Risk service unavailable. Is Django running?' });
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ message: 'Risk assessment error: ' + err.message });
+  }
+});
+
+// =============================================================================
+// ROUTE: GET /api/risk/scores/:elderId
+// =============================================================================
+app.get('/api/risk/scores/:elderId', (req, res) => {
+  const limit = parseInt(req.query.limit) || 10;
+  db.query(
+    `SELECT id, elder_id, risk_score, risk_level, is_critical,
+            alert_message, alert_reasons, top_factors, trigger_source, assessed_at
+     FROM ai_risk_scores
+     WHERE elder_id=?
+     ORDER BY assessed_at DESC LIMIT ?`,
+    [req.params.elderId, limit],
+    (err, rows) => {
+      if (err) return res.status(500).json({ message: 'Error: ' + err.message });
+      const parsed = (rows || []).map(r => ({
+        ...r,
+        alert_reasons: tryParse(r.alert_reasons, []),
+        top_factors:   tryParse(r.top_factors,   []),
+        is_critical:   !!r.is_critical,
+      }));
+      res.json({ latest: parsed[0] || null, history: parsed });
+    }
+  );
+});
+
+// =============================================================================
+// ROUTE: GET /api/risk/scores/caregiver/:caregiverId
+// =============================================================================
+app.get('/api/risk/scores/caregiver/:caregiverId', (req, res) => {
+  db.query(
+    `SELECT u.id AS elder_id, u.name AS elder_name,
+            rs.risk_score, rs.risk_level, rs.is_critical,
+            rs.alert_message, rs.alert_reasons, rs.top_factors, rs.assessed_at
+     FROM users u
+     JOIN connections c ON c.elder_id=u.id AND c.requester_id=? AND c.status='approved'
+     LEFT JOIN ai_risk_scores rs
+       ON rs.id = (
+         SELECT id FROM ai_risk_scores
+         WHERE elder_id=u.id ORDER BY assessed_at DESC LIMIT 1
+       )
+     ORDER BY rs.risk_score DESC, u.name`,
+    [req.params.caregiverId],
+    (err, rows) => {
+      if (err) return res.status(500).json({ message: 'Error: ' + err.message });
+      res.json((rows || []).map(r => ({
+        ...r,
+        alert_reasons: tryParse(r.alert_reasons, []),
+        top_factors:   tryParse(r.top_factors,   []),
+        is_critical:   !!r.is_critical,
+        risk_score:    r.risk_score || 0,
+        risk_level:    r.risk_level || 'unknown',
+      })));
+    }
+  );
+});
+
+// =============================================================================
+// MySQL migration — auto-create ai_risk_scores table on server start
+// =============================================================================
+db.query(`
+  CREATE TABLE IF NOT EXISTS ai_risk_scores (
+    id              INT AUTO_INCREMENT PRIMARY KEY,
+    elder_id        INT          NOT NULL,
+    risk_score      FLOAT        NOT NULL DEFAULT 0,
+    risk_level      VARCHAR(10)  NOT NULL DEFAULT 'low',
+    is_critical     TINYINT(1)   NOT NULL DEFAULT 0,
+    alert_message   TEXT,
+    alert_reasons   JSON,
+    top_factors     JSON,
+    trigger_source  VARCHAR(30)  DEFAULT 'cron',
+    assessed_at     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_elder_id (elder_id),
+    INDEX idx_assessed_at (assessed_at),
+    INDEX idx_is_critical (is_critical)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+`, (err) => {
+  if (err) console.log('[risk] Table creation warning:', err.message);
+  else console.log('[risk] ai_risk_scores table ready');
+});
+
+// =============================================================================
 const PORT = 3000;
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Server running on http://192.168.1.68:${PORT}`);
+  console.log(`Server running on http://192.168.1.69:${PORT}`);
 });

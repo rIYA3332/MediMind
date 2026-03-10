@@ -1,21 +1,12 @@
 # regression/views.py
-# ─────────────────────────────────────────────────────────────────────────────
-# KEY FIX: All readings logged on the SAME DAY (same date) are now handled.
-# Previously the code only worked when readings spanned multiple dates.
-# Now: if unique dates == 1, we use the reading index (0,1,2…) as the X axis.
-# This lets blood sugar / weight / heart rate readings all logged "today"
-# still produce a valid trend line.
-#
-# Minimum requirement: 2 readings total (not 2 different dates).
-#
-# THRESHOLD FIX: Each vital now uses its own meaningful slope threshold for
-# classifying a trend as "stable" vs "rising/falling".  The old flat 0.05
-# threshold treated a 0.05 mmHg/day BP change as rising (it's noise) while
-# also treating a 0.05 °F/day temperature change as noise (it's significant).
-# ─────────────────────────────────────────────────────────────────────────────
-
 import statistics
+import os
+import joblib
+import numpy as np
+import json
 from datetime import datetime
+from django.views.decorators.csrf import csrf_exempt
+from django.http import JsonResponse
 
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
@@ -38,17 +29,6 @@ VITAL_META = {
     'weight':         {'label': 'Weight',         'unit': 'kg',    'normal_range': 'Track changes'},
 }
 
-# ─── Per-vital stable thresholds (slope in units/day) ────────────────────────
-#
-# These define the minimum slope that counts as a real trend rather than noise.
-# They match the domain knowledge in utils.py.
-#
-#   blood_pressure : 0.15 mmHg/day  — small daily swings are normal
-#   blood_sugar    : 0.30 mg/dL/day — post-meal variation is large
-#   heart_rate     : 0.10 bpm/day   — resting HR fluctuates ~5 bpm day-to-day
-#   temperature    : 0.02 °F/day    — normal body temp range is only ±1 °F
-#   weight         : 0.02 kg/day    — even 0.1 kg/day shift is meaningful
-#
 STABLE_THRESHOLDS = {
     'blood_pressure': 0.15,
     'blood_sugar':    0.30,
@@ -56,7 +36,21 @@ STABLE_THRESHOLDS = {
     'temperature':    0.02,
     'weight':         0.02,
 }
-DEFAULT_STABLE_THRESHOLD = 0.10   # fallback for unknown vitals
+DEFAULT_STABLE_THRESHOLD = 0.10
+
+# ─── RF model path & cache ────────────────────────────────────────────────────
+
+_MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'risk_rf_model.pkl')
+_rf_bundle  = None
+
+FEATURE_NAMES = [
+    'bp_sys', 'bp_dia', 'blood_sugar', 'heart_rate', 'temperature', 'weight_change',
+    'missed_doses_7d', 'missed_doses_streak', 'medication_adherence_pct',
+    'missed_routines_7d', 'routine_adherence_pct',
+    'missed_reminders_7d', 'reminder_adherence_pct',
+    'missed_appointments_7d', 'total_missed_7d',
+    'days_since_last_reading', 'reading_count_7d', 'risk_flag_count_7d',
+]
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -69,10 +63,6 @@ def _r(v, dp=2):
 
 
 def _parse_numeric(value_str, log_type):
-    """
-    Blood pressure '120/80' → systolic (120).
-    All others → float. Returns None if unparseable.
-    """
     try:
         v = str(value_str).strip()
         if log_type == 'blood_pressure':
@@ -116,22 +106,9 @@ def _significance(p_value, n):
 
 
 def _classify_trend(slope: float, r_squared: float, log_type: str) -> str:
-    """
-    Returns 'rising', 'falling', or 'stable'.
-
-    Uses a per-vital slope threshold so that normal daily variation in a high-
-    variance vital (e.g. blood sugar) does not produce a spurious rising/falling
-    label, while a small but real shift in a low-variance vital (e.g. temperature)
-    is still caught.
-
-    A weak fit (r_squared < 0.10) is always classified as stable because the
-    line explains less than 10 % of the variance — it's not a reliable trend.
-    """
     if r_squared < 0.10:
         return 'stable'
-
     threshold = STABLE_THRESHOLDS.get(log_type, DEFAULT_STABLE_THRESHOLD)
-
     if slope > threshold:
         return 'rising'
     if slope < -threshold:
@@ -139,19 +116,28 @@ def _classify_trend(slope: float, r_squared: float, log_type: str) -> str:
     return 'stable'
 
 
+def safe_float(val, default=0.0):
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return default
+
+
+def _load_model():
+    global _rf_bundle
+    if _rf_bundle is None:
+        if not os.path.exists(_MODEL_PATH):
+            return None, "Model file not found. Run: python regression/risk_model.py"
+        try:
+            _rf_bundle = joblib.load(_MODEL_PATH)
+        except Exception as e:
+            return None, f"Failed to load model: {e}"
+    return _rf_bundle, None
+
+
 # ─── Core regression ──────────────────────────────────────────────────────────
 
 def _run_regression(log_type, readings):
-    """
-    readings = [{'date': 'YYYY-MM-DD', 'value': str}, ...]
-
-    X-axis strategy
-    ───────────────
-    • Multiple dates  → X = days since first reading date  (original behaviour)
-    • All same date   → X = reading index 0, 1, 2 …        (NEW: same-day fix)
-
-    Requires at least 2 readings regardless of date spread.
-    """
     if not readings or len(readings) < 2:
         return {
             'error': (
@@ -165,7 +151,6 @@ def _run_regression(log_type, readings):
         {'label': log_type.replace('_', ' ').title(), 'unit': '', 'normal_range': ''}
     )
 
-    # ── Parse numeric values ──────────────────────────────────────────────────
     parsed = []
     for i, r in enumerate(readings):
         y = _parse_numeric(r.get('value', ''), log_type)
@@ -182,9 +167,8 @@ def _run_regression(log_type, readings):
 
     n            = len(parsed)
     unique_dates = set(p['date'] for p in parsed)
-    same_day     = len(unique_dates) <= 1   # all readings on same calendar date
+    same_day     = len(unique_dates) <= 1
 
-    # ── Build X values ────────────────────────────────────────────────────────
     if same_day:
         xs = [float(p['index']) for p in parsed]
     else:
@@ -204,13 +188,11 @@ def _run_regression(log_type, readings):
     dates    = [p['date'] for p in parsed]
     raw_vals = [p['raw']  for p in parsed]
 
-    # ── Linear regression ─────────────────────────────────────────────────────
     if SCIPY_AVAILABLE and n >= 3:
         slope, intercept, r_value, p_value, std_err = scipy_stats.linregress(xs, ys)
         r_squared = r_value ** 2
         conf_95   = 2.0 * std_err if std_err else 0.0
     else:
-        # Manual least-squares — works with exactly 2 points
         mean_x = sum(xs) / n
         mean_y = sum(ys) / n
         ss_xy  = sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, ys))
@@ -223,11 +205,10 @@ def _run_regression(log_type, readings):
         ss_res    = sum((y - yp) ** 2 for y, yp in zip(ys, y_pred))
         ss_tot    = sum((y - mean_y) ** 2 for y in ys)
         r_squared = 1 - ss_res / ss_tot if ss_tot != 0 else 1.0
-        p_value   = 0.5   # unknown without scipy
+        p_value   = 0.5
         std_err   = 0.0
         conf_95   = 0.0
 
-    # ── Classify trend using per-vital threshold ──────────────────────────────
     trend = _classify_trend(slope, r_squared, log_type)
 
     trend_label = {
@@ -236,9 +217,7 @@ def _run_regression(log_type, readings):
         'stable':  '→ Stable',
     }[trend]
 
-    # change_per_week: days-based → 7*slope; same-day → slope per reading
     change_per_week = _r(slope) if same_day else _r(slope * 7)
-
     trend_line      = [_r(slope * x + intercept) for x in xs]
     predicted_today = _r(slope * xs[-1] + intercept)
 
@@ -254,7 +233,6 @@ def _run_regression(log_type, readings):
         'count':  n,
     }
 
-    # ── Summary ───────────────────────────────────────────────────────────────
     direction = (
         'increasing' if trend == 'rising'
         else 'decreasing' if trend == 'falling'
@@ -316,15 +294,10 @@ def _run_regression(log_type, readings):
     }
 
 
-# ─── API views ────────────────────────────────────────────────────────────────
+# ─── Regression API views ─────────────────────────────────────────────────────
 
 @api_view(['POST'])
 def regression_batch(request):
-    """
-    POST /api/regression/batch/
-    Body: { "vitals": [ { "log_type": "heart_rate", "readings": [...] }, ... ] }
-    Returns a result for every vital (including errors so frontend can skip them).
-    """
     vitals = request.data.get('vitals', [])
     if not vitals:
         return Response(
@@ -341,7 +314,6 @@ def regression_batch(request):
 
         result = _run_regression(log_type, readings)
 
-        # Pass through any extra fields from Node (e.g. data_window_days)
         for k, v in item.items():
             if k not in ('log_type', 'readings') and k not in result:
                 result[k] = v
@@ -353,10 +325,6 @@ def regression_batch(request):
 
 @api_view(['POST'])
 def regression_single(request):
-    """
-    POST /api/regression/single/
-    Body: { "log_type": "heart_rate", "readings": [...] }
-    """
     log_type = request.data.get('log_type', '')
     readings = request.data.get('readings', [])
 
@@ -379,11 +347,201 @@ def regression_single(request):
 
 @api_view(['GET'])
 def health_check(request):
-    """GET /api/regression/health/ — liveness probe."""
     return Response({
         'status':                'ok',
         'scipy':                 SCIPY_AVAILABLE,
         'min_readings_required': 2,
         'same_day_support':      True,
         'per_vital_thresholds':  STABLE_THRESHOLDS,
+    })
+
+
+# ─── Risk model helpers ───────────────────────────────────────────────────────
+
+def _build_risk_detail(label: str, proba: dict, features: dict) -> dict:
+    score = round(proba.get('HIGH', 0) * 100, 1)
+
+    reasons = []
+    actions = []
+
+    bp_sys = features.get('bp_sys', 0)
+    bp_dia = features.get('bp_dia', 0)
+    if bp_sys > 160 or bp_dia > 100:
+        reasons.append(f"Blood pressure is very high ({bp_sys}/{bp_dia} mmHg)")
+        actions.append("Contact the doctor about blood pressure medication")
+    elif bp_sys > 140 or bp_dia > 90:
+        reasons.append(f"Blood pressure is elevated ({bp_sys}/{bp_dia} mmHg)")
+        actions.append("Monitor blood pressure twice daily")
+
+    sugar = features.get('blood_sugar', 0)
+    if sugar > 250:
+        reasons.append(f"Blood sugar is critically high ({sugar} mg/dL)")
+        actions.append("Check insulin dosage and contact the doctor immediately")
+    elif sugar > 180:
+        reasons.append(f"Blood sugar is high ({sugar} mg/dL)")
+        actions.append("Review diet and medication schedule for blood sugar")
+    elif sugar < 70:
+        reasons.append(f"Blood sugar is dangerously low ({sugar} mg/dL)")
+        actions.append("Give a sugary snack and monitor closely; call doctor if no improvement")
+
+    hr = features.get('heart_rate', 0)
+    if hr > 130:
+        reasons.append(f"Heart rate is very high ({hr} bpm)")
+        actions.append("Seek medical attention for elevated heart rate")
+    elif hr < 50:
+        reasons.append(f"Heart rate is very low ({hr} bpm)")
+        actions.append("Contact the doctor about low heart rate")
+
+    temp = features.get('temperature', 0)
+    if temp >= 103:
+        reasons.append(f"High fever detected ({temp}°F)")
+        actions.append("Seek urgent medical care for high fever")
+    elif temp >= 100.4:
+        reasons.append(f"Mild fever detected ({temp}°F)")
+        actions.append("Monitor temperature and ensure adequate hydration")
+
+    wt = features.get('weight_change', 0)
+    if abs(wt) >= 5:
+        direction = "gained" if wt > 0 else "lost"
+        reasons.append(f"Significant weight change: {direction} {abs(wt):.1f} kg recently")
+        actions.append("Discuss weight changes with the doctor at next visit")
+
+    missed_doses = features.get('missed_doses_7d', 0)
+    streak       = features.get('missed_doses_streak', 0)
+    adherence    = features.get('medication_adherence_pct', 100)
+    if streak >= 3:
+        reasons.append(f"Medications missed for {streak} days in a row")
+        actions.append("Ensure medications are given immediately and set daily reminders")
+    elif missed_doses >= 4:
+        reasons.append(f"{missed_doses} medication doses missed in the last 7 days")
+        actions.append("Review medication schedule and check for side effects")
+    elif adherence < 70:
+        reasons.append(f"Low medication adherence ({adherence:.0f}%)")
+        actions.append("Set up a pill organiser or daily medication alarm")
+
+    missed_routines = features.get('missed_routines_7d', 0)
+    routine_adh     = features.get('routine_adherence_pct', 100)
+    if missed_routines >= 5:
+        reasons.append(f"{missed_routines} daily routines missed in the last week")
+        actions.append("Check on elder's daily activity and energy levels")
+    elif routine_adh < 70:
+        reasons.append(f"Low routine adherence ({routine_adh:.0f}%)")
+        actions.append("Simplify the daily routine and check for mobility issues")
+
+    missed_rem = features.get('missed_reminders_7d', 0)
+    if missed_rem >= 5:
+        reasons.append(f"{missed_rem} reminders missed in the last week")
+        actions.append("Review reminder settings and check elder's alertness")
+
+    missed_appts = features.get('missed_appointments_7d', 0)
+    if missed_appts >= 2:
+        reasons.append(f"{missed_appts} medical appointments missed recently")
+        actions.append("Reschedule missed appointments as soon as possible")
+    elif missed_appts == 1:
+        reasons.append("1 medical appointment missed recently")
+        actions.append("Reschedule the missed appointment")
+
+    days_gap = features.get('days_since_last_reading', 0)
+    if days_gap >= 5:
+        reasons.append(f"No health readings recorded for {days_gap} days")
+        actions.append("Log vitals today to keep the health record up to date")
+
+    if label == 'HIGH' and not reasons:
+        reasons.append("Multiple risk factors detected across vitals and schedule")
+        actions.append("Schedule a comprehensive health review with the doctor")
+
+    return {
+        'risk_level':    label,
+        'risk_score':    score,
+        'probabilities': {k: round(v * 100, 1) for k, v in proba.items()},
+        'reasons':       reasons,
+        'actions':       actions,
+        'summary':       _risk_summary(label, score, reasons),
+    }
+
+
+def _risk_summary(label: str, score: float, reasons: list) -> str:
+    if label == 'HIGH':
+        return (
+            f"⚠️ High risk detected (score {score:.0f}/100). "
+            f"{len(reasons)} concern{'s' if len(reasons) != 1 else ''} identified. "
+            "Immediate caregiver attention recommended."
+        )
+    if label == 'MEDIUM':
+        return (
+            f"⚡ Moderate risk (score {score:.0f}/100). "
+            f"{len(reasons)} area{'s' if len(reasons) != 1 else ''} to monitor. "
+            "Review and address flagged items."
+        )
+    return (
+        f"✅ Low risk (score {score:.0f}/100). "
+        "All tracked parameters are within acceptable ranges."
+    )
+
+
+# ─── Risk API views ───────────────────────────────────────────────────────────
+
+@api_view(['POST'])
+def assess_risk(request):
+    """
+    POST /api/regression/risk/assess/
+    Node.js sends flat feature fields directly (bp_sys, bp_dia, blood_sugar, etc.)
+    """
+    bundle, err = _load_model()
+    if err:
+        return Response({'error': err}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+    clf      = bundle['model']
+    features = bundle['features']
+
+    defaults = {
+        'bp_sys': 120, 'bp_dia': 80,
+        'blood_sugar': 100, 'heart_rate': 72,
+        'temperature': 98.6, 'weight_change': 0.0,
+        'missed_doses_7d': 0, 'missed_doses_streak': 0,
+        'medication_adherence_pct': 100,
+        'missed_routines_7d': 0, 'routine_adherence_pct': 100,
+        'missed_reminders_7d': 0, 'reminder_adherence_pct': 100,
+        'missed_appointments_7d': 0, 'total_missed_7d': 0,
+        'days_since_last_reading': 0, 'reading_count_7d': 7,
+        'risk_flag_count_7d': 0,
+    }
+
+    data = request.data
+    try:
+        row = np.array([[
+            float(data.get(f, defaults[f])) for f in features
+        ]])
+    except (TypeError, ValueError) as e:
+        return Response({'error': f'Invalid feature value: {e}'}, status=status.HTTP_400_BAD_REQUEST)
+
+    label     = clf.predict(row)[0]
+    proba_arr = clf.predict_proba(row)[0]
+    proba     = {cls: float(p) for cls, p in zip(clf.classes_, proba_arr)}
+
+    used_features = {f: float(data.get(f, defaults[f])) for f in features}
+    detail = _build_risk_detail(label, proba, used_features)
+
+    return Response({
+        'elder_id':      data.get('elder_id'),
+        'assessment':    detail,
+        'features_used': used_features,
+    })
+
+
+@api_view(['GET'])
+def risk_health(request):
+    """GET /api/regression/risk/health/ — model liveness probe."""
+    bundle, err = _load_model()
+    if err:
+        return Response({'status': 'error', 'message': err},
+                        status=status.HTTP_503_SERVICE_UNAVAILABLE)
+    clf = bundle['model']
+    return Response({
+        'status':     'ok',
+        'model':      'RandomForestClassifier',
+        'estimators': clf.n_estimators,
+        'classes':    list(clf.classes_),
+        'features':   bundle['features'],
+        'model_path': _MODEL_PATH,
     })
