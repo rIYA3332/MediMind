@@ -7,6 +7,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import Card from '../../components/Card';
 import { colors } from '../../styles/colors';
 import { getApiUrl } from '../../config/api';
+import MoodInsightsCard from '../../components/MoodInsightsCard';
 
 const SCREEN_W = Dimensions.get('window').width;
 
@@ -364,20 +365,14 @@ const HealthStatusScreen = ({ route, navigation }: any) => {
     if (!elderId) return;
     setRiskLoading(true);
     try {
-      const res = await fetch(getApiUrl(`/api/health-risks/ai/${elderId}`));
-      const contentType = res.headers.get('content-type') || '';
-      if (!contentType.includes('application/json')) {
-        console.warn('RF risk endpoint returned non-JSON response (status:', res.status, ')');
+      const res  = await fetch(getApiUrl(`/api/health-risks/ai/${elderId}`));
+      const text = await res.text();
+      const trimmed = text.trim();
+      if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) {
         setRisks([]);
         return;
       }
-      if (!res.ok) {
-        console.warn('RF risk endpoint error:', res.status);
-        setRisks([]);
-        return;
-      }
-      const data = await res.json();
-      // assessment.reasons is string[] from _build_risk_detail in views.py
+      const data = JSON.parse(trimmed);
       const rfRisks: string[] = data?.assessment?.reasons || [];
       setRisks(rfRisks);
     } catch (e) {
@@ -446,9 +441,6 @@ const HealthStatusScreen = ({ route, navigation }: any) => {
     fetchTrends();
   };
 
-  const vitalsMap: Record<string, LatestVital> = {};
-  latestVitals.forEach(v => { vitalsMap[v.log_type] = v; });
-
   const goodVitals = vitals.filter(v => !v.error && v.readings?.length >= 2);
   const risingList = goodVitals.filter(v => v.regression?.trend === 'rising');
 
@@ -483,7 +475,7 @@ const HealthStatusScreen = ({ route, navigation }: any) => {
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.primary} />}
       >
 
-        {/* ── AI Risk Assessment Banner ─────────────────────────────────────── */}
+        {/* ── 1. AI Risk Assessment Banner ─────────────────────────────────── */}
         {riskLoading ? (
           <View style={styles.riskLoadingRow}>
             <ActivityIndicator size="small" color="#e17055" />
@@ -492,7 +484,7 @@ const HealthStatusScreen = ({ route, navigation }: any) => {
         ) : risks.length > 0 ? (
           <View style={styles.risksBanner}>
             <Text style={styles.risksBannerTitle}>
-              🤖 AI Risk Assessment · {risks.length} concern{risks.length > 1 ? 's' : ''} detected
+              Active Risks · {risks.length} concern{risks.length > 1 ? 's' : ''} detected
             </Text>
             {risks.map((reason, index) => (
               <View key={index} style={[styles.riskItem, { borderLeftColor: '#e17055', backgroundColor: '#fff5f0' }]}>
@@ -506,7 +498,7 @@ const HealthStatusScreen = ({ route, navigation }: any) => {
           </View>
         )}
 
-        {/* ── Vital Signs header row with period toggle ─────────────────────── */}
+        {/* ── 2. Vital Signs header + period toggle ────────────────────────── */}
         <View style={styles.trendHeaderRow}>
           <Text style={styles.sectionLabel}>Vital Signs</Text>
           <View style={styles.periodRow}>
@@ -570,7 +562,7 @@ const HealthStatusScreen = ({ route, navigation }: any) => {
           </View>
         )}
 
-        {/* Recent Readings */}
+        {/* ── 3. Recent Readings ────────────────────────────────────────────── */}
         {recentLogs.length > 0 && (
           <>
             <Text style={styles.sectionLabel}>Recent Readings</Text>
@@ -595,6 +587,12 @@ const HealthStatusScreen = ({ route, navigation }: any) => {
             </Card>
           </>
         )}
+
+        {/* ── 4. Emotional Well-being — MoodInsightsCard ────────────────────── */}
+        <Text style={styles.sectionLabel}>Emotional Well-being</Text>
+        <View style={{ paddingHorizontal: 15 }}>
+          <MoodInsightsCard elderId={elderId} elderName={elderName} />
+        </View>
 
         <View style={{ height: 30 }} />
       </ScrollView>
@@ -623,7 +621,6 @@ const styles = StyleSheet.create({
   risksBanner:       { margin: 15, marginBottom: 0 },
   risksBannerTitle:  { fontSize: 13, fontWeight: 'bold', color: '#e17055', marginBottom: 8 },
   riskItem:          { borderLeftWidth: 4, padding: 10, borderRadius: 8, marginBottom: 8 },
-  riskSeverityLabel: { fontSize: 11, fontWeight: 'bold', marginBottom: 4 },
   riskMessage:       { fontSize: 12, color: colors.textPrimary, lineHeight: 17 },
   risksClear:        { margin: 15, marginBottom: 0, backgroundColor: '#f0fdf4', borderRadius: 10, padding: 12, borderLeftWidth: 4, borderLeftColor: '#00b894' },
   risksClearTxt:     { fontSize: 12, color: '#00b894', fontWeight: '600' },

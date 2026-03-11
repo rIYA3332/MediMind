@@ -953,21 +953,297 @@ app.get('/api/health-trends/:userId/:logType', (req, res) => {
 // =============================================================================
 // MOOD
 // =============================================================================
-app.post('/api/mood', (req, res) => {
-  const { userId, mood, notes } = req.body;
-  db.query(`INSERT INTO mood_logs (user_id, mood, notes) VALUES (?,?,?)`, [userId, mood, notes || null], (err) => {
-    if (err) return res.status(400).json({ message: 'Failed' });
-    logActivity(userId, 'mood_log', `Mood recorded: ${mood}`);
-    const concerning = ['sad', 'anxious', 'lonely'];
-    const priority   = concerning.includes(mood) ? 'high' : 'low';
-    notifyCaregivers(
-      userId, 'mood',
-      `${concerning.includes(mood) ? '⚠️' : '😊'} Mood check-in: ${mood.charAt(0).toUpperCase() + mood.slice(1)}${notes ? ` — "${notes}"` : ''}`,
-      priority
+// =============================================================================
+// PASTE THIS FILE'S CONTENT INTO index.js
+// ─────────────────────────────────────────────────────────────────────────────
+// 1. callDjangoSentiment()   — helper (add near callDjangoRiskAssess)
+// 2. getMoodStreak()         — helper (add near callDjangoSentiment)
+// 3. POST /api/mood          — REPLACE the existing POST /api/mood route
+// 4. GET  /api/mood/sentiment/:userId  — NEW route (add after POST /api/mood)
+// 5. GET  /api/mood/history/:userId    — NEW route (add after sentiment route)
+// =============================================================================
+
+
+// =============================================================================
+// [1] HELPER — call Django sentiment microservice
+//     Add this near callDjangoRiskAssess()
+// =============================================================================
+async function callDjangoSentiment(payload) {
+  try {
+    const resp = await fetch(`${DJANGO_REGRESSION_URL}/api/regression/sentiment/analyze/`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(payload),
+    });
+    if (!resp.ok) {
+      console.error('[sentiment] Django returned', resp.status);
+      return null;
+    }
+    return await resp.json();
+  } catch (err) {
+    console.error('[sentiment] Django call failed:', err.message);
+    return null;
+  }
+}
+
+
+// =============================================================================
+// [2] HELPER — compute mood streak (consecutive concerning moods)
+//     Add this near callDjangoSentiment()
+//     Returns: number of consecutive sad/anxious/lonely/tired moods ending now
+// =============================================================================
+async function getMoodStreak(userId) {
+  try {
+    const rows = await dbQuery(
+      `SELECT mood FROM mood_logs
+       WHERE user_id = ?
+       ORDER BY logged_at DESC
+       LIMIT 10`,
+      [userId]
     );
-    res.json({ message: 'Mood logged successfully' });
-  });
+    const concerning = new Set(['sad', 'anxious', 'lonely', 'tired']);
+    let streak = 0;
+    for (const row of rows) {
+      if (concerning.has(row.mood)) streak++;
+      else break;
+    }
+    return streak;
+  } catch (_) {
+    return 0;
+  }
+}
+
+
+// =============================================================================
+// [3] POST /api/mood   — REPLACE the existing route with this version
+//     Changes vs old route:
+//       - Calls Django sentiment after saving
+//       - Saves sentiment result to mood_logs (sentiment_label, concern_score)
+//       - Sends smarter caregiver alert with AI label + advice
+//       - Stores alert_id so front-end can reference it
+// =============================================================================
+app.post('/api/mood', async (req, res) => {
+  const { userId, mood, notes } = req.body;
+  if (!userId || !mood) return res.status(400).json({ message: 'userId and mood required' });
+
+  try {
+    // ── 1. Save mood log ──────────────────────────────────────────────────
+    const insertResult = await dbQuery(
+      `INSERT INTO mood_logs (user_id, mood, notes) VALUES (?, ?, ?)`,
+      [userId, mood, notes || null]
+    );
+    const moodLogId = insertResult.insertId;
+
+    logActivity(userId, 'mood_log', `Mood recorded: ${mood}`);
+
+    // ── 2. Compute streak + hour ──────────────────────────────────────────
+    const streak = await getMoodStreak(userId);
+    const hour   = new Date().getHours();
+
+    // ── 3. Call Django sentiment model ────────────────────────────────────
+    let sentimentResult = null;
+    try {
+      const djangoResp = await callDjangoSentiment({
+        elder_id:    userId,
+        mood,
+        notes:       notes || '',
+        mood_streak: streak,
+        hour,
+      });
+      if (djangoResp && djangoResp.assessment) {
+        sentimentResult = djangoResp.assessment;
+      }
+    } catch (sentErr) {
+      console.log('[sentiment] Non-fatal error:', sentErr.message);
+    }
+
+    // ── 4. Update mood_log with sentiment result (if columns exist) ───────
+    if (sentimentResult) {
+      db.query(
+        `UPDATE mood_logs
+         SET sentiment_label = ?,
+             concern_score   = ?,
+             sentiment_color = ?
+         WHERE id = ?`,
+        [
+          sentimentResult.sentiment_label,
+          sentimentResult.concern_score,
+          sentimentResult.sentiment_color,
+          moodLogId,
+        ],
+        (err) => {
+          if (err) console.log('[sentiment] mood_logs update error (run migration):', err.message);
+        }
+      );
+    }
+
+    // ── 5. Caregiver notification ─────────────────────────────────────────
+    const concerningMoods = new Set(['sad', 'anxious', 'lonely']);
+    const isConcerning    = concerningMoods.has(mood);
+
+    let alertPriority = 'low';
+    let alertMessage;
+    let alertEmoji = '😊';
+
+    if (sentimentResult) {
+      // AI-powered alert message
+      const label = sentimentResult.sentiment_label;
+      const score = sentimentResult.concern_score;
+      const emoji = sentimentResult.sentiment_emoji;
+      alertEmoji  = emoji;
+
+      if (label === 'CRITICAL') {
+        alertPriority = 'critical';
+        alertMessage  = `🚨 CRITICAL mood alert for elder — ${emoji} ${label} (score: ${score}/100)\n` +
+                        `Mood: ${mood.charAt(0).toUpperCase() + mood.slice(1)}` +
+                        (notes ? `\nNote: "${notes}"` : '') +
+                        `\n\n💡 Advice: ${sentimentResult.advice}`;
+      } else if (label === 'CONCERNING') {
+        alertPriority = 'high';
+        alertMessage  = `⚠️ Mood concern detected — ${emoji} ${label} (score: ${score}/100)\n` +
+                        `Mood: ${mood.charAt(0).toUpperCase() + mood.slice(1)}` +
+                        (notes ? `\nNote: "${notes}"` : '') +
+                        `\n\n💡 Advice: ${sentimentResult.advice}`;
+      } else {
+        alertMessage  = `${emoji} Mood check-in: ${mood.charAt(0).toUpperCase() + mood.slice(1)} (${label})` +
+                        (notes ? ` — "${notes}"` : '');
+      }
+    } else {
+      // Fallback: original simple alert
+      alertMessage = `${isConcerning ? '⚠️' : '😊'} Mood check-in: ${mood.charAt(0).toUpperCase() + mood.slice(1)}` +
+                     (notes ? ` — "${notes}"` : '');
+      alertPriority = isConcerning ? 'high' : 'low';
+    }
+
+    notifyCaregivers(userId, 'mood', alertMessage, alertPriority);
+
+    // ── 6. Extra push for CRITICAL ────────────────────────────────────────
+    if (sentimentResult?.sentiment_label === 'CRITICAL') {
+      db.query(
+        `SELECT requester_id FROM connections WHERE elder_id = ? AND status = 'approved'`,
+        [userId],
+        (err, caregivers) => {
+          if (err || !caregivers) return;
+          caregivers.forEach(c => {
+            sendCaregiverPush(
+              c.requester_id,
+              '🚨 Critical Mood Alert',
+              `Elder needs immediate attention — concern score: ${sentimentResult.concern_score}/100`
+            );
+          });
+        }
+      );
+    }
+
+    res.json({
+      message:   'Mood logged successfully',
+      moodLogId,
+      sentiment: sentimentResult ? {
+        label:        sentimentResult.sentiment_label,
+        emoji:        sentimentResult.sentiment_emoji,
+        score:        sentimentResult.concern_score,
+        should_alert: sentimentResult.should_alert,
+      } : null,
+    });
+
+  } catch (err) {
+    console.error('POST /api/mood error:', err.message);
+    res.status(500).json({ message: 'Failed to log mood: ' + err.message });
+  }
 });
+
+
+// =============================================================================
+// [4] GET /api/mood/sentiment/:userId
+//     Returns the latest sentiment assessment for an elder
+//     Used by: caregiver MoodInsightsCard
+// =============================================================================
+app.get('/api/mood/sentiment/:userId', async (req, res) => {
+  const userId = parseInt(req.params.userId);
+  if (!userId) return res.status(400).json({ message: 'Invalid userId' });
+
+  try {
+    // Latest 10 mood logs with sentiment data
+    const logs = await dbQuery(
+      `SELECT id, mood, notes, sentiment_label, concern_score, sentiment_color, logged_at
+       FROM mood_logs
+       WHERE user_id = ?
+       ORDER BY logged_at DESC
+       LIMIT 10`,
+      [userId]
+    );
+
+    if (!logs.length) {
+      return res.json({ has_data: false, logs: [] });
+    }
+
+    // Streak calculation
+    const streak    = await getMoodStreak(userId);
+    const latest    = logs[0];
+
+    // 7-day mood distribution
+    const distribution = await dbQuery(
+      `SELECT mood, COUNT(*) as count
+       FROM mood_logs
+       WHERE user_id = ? AND logged_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)
+       GROUP BY mood
+       ORDER BY count DESC`,
+      [userId]
+    );
+
+    // Count of concerning logs in last 7 days
+    const concerningCount = await dbQuery(
+      `SELECT COUNT(*) as cnt FROM mood_logs
+       WHERE user_id = ?
+         AND mood IN ('sad','anxious','lonely')
+         AND logged_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)`,
+      [userId]
+    );
+
+    res.json({
+      has_data:          true,
+      latest_mood:       latest.mood,
+      latest_sentiment:  latest.sentiment_label  || null,
+      latest_score:      latest.concern_score    || null,
+      latest_color:      latest.sentiment_color  || null,
+      latest_at:         latest.logged_at,
+      mood_streak:       streak,
+      concerning_7d:     concerningCount[0]?.cnt || 0,
+      distribution_7d:   distribution,
+      logs:              logs,
+    });
+
+  } catch (err) {
+    console.error('GET /api/mood/sentiment error:', err.message);
+    res.status(500).json({ message: err.message });
+  }
+});
+
+
+// =============================================================================
+// [5] GET /api/mood/history/:userId
+//     Full mood history with sentiment labels — for elder's own view
+// =============================================================================
+app.get('/api/mood/history/:userId', async (req, res) => {
+  const userId = parseInt(req.params.userId);
+  const limit  = Math.min(parseInt(req.query.limit) || 20, 50);
+
+  try {
+    const logs = await dbQuery(
+      `SELECT id, mood, notes, sentiment_label, concern_score,
+              sentiment_color, logged_at
+       FROM mood_logs
+       WHERE user_id = ?
+       ORDER BY logged_at DESC
+       LIMIT ?`,
+      [userId, limit]
+    );
+    res.json(logs || []);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+//
 
 app.get('/api/mood/:userId', (req, res) => {
   db.query('SELECT * FROM mood_logs WHERE user_id=? ORDER BY logged_at DESC', [req.params.userId], (err, results) => {
@@ -2876,12 +3152,14 @@ async function runRiskAssessment(elderId, trigger = 'cron') {
       }
     );
 
+
     if (score < 40) return result;
 
     const priority  = isCritical ? 'critical' : 'high';
     const alertType = 'ai_risk';
     const message   = result.alert_message;
 
+    
     db.query(
       `SELECT requester_id FROM connections WHERE elder_id=? AND status='approved'`,
       [elderId],
