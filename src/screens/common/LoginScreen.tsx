@@ -24,61 +24,74 @@ const LoginScreen: React.FC<Props> = ({ navigation }) => {
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
 
-  const handleLogin = async () => {
-    if (!email || !password) {
-      Alert.alert("Error", "Please enter both email and password");
-      return;
-    }
+const handleLogin = async () => {
+  if (!email || !password) {
+    Alert.alert("Error", "Please enter both email and password");
+    return;
+  }
 
-    setLoading(true);
-    try {
-      const res = await fetch(getApiUrl('/api/auth/login'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          email: email.trim().toLowerCase(), 
-          password: password 
-        }),
-      });
+  setLoading(true);
+  try {
+    const res = await fetch(getApiUrl('/api/auth/login'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ 
+        email: email.trim().toLowerCase(), 
+        password: password 
+      }),
+    });
 
-      const data = await res.json();
+    const data = await res.json();
 
-      if (res.ok) {
-        if (data.role === 'elderly') {
-          // Navigate to elderly dashboard
-          navigation.replace('ElderlyApp', { user: data });
-        } else if (data.role === 'caregiver' || data.role === 'doctor') {
-          // Check if caregiver has connections
-          if (data.hasConnection) {
-            // Has approved connections - go to caregiver app
-            navigation.replace('CaregiverApp', { user: data });
-          } else {
-            // No connections - need to connect with elder first
-            Alert.alert(
-              "Connect with Elder", 
-              "You need to connect with an elder first. Enter their connection code.",
-              [
-                {
-                  text: "OK",
-                  onPress: () => navigation.navigate('ConnectScreen', { 
-                    role: data.role, 
-                    userId: data.id 
-                  })
-                }
-              ]
-            );
-          }
+    if (res.ok) {
+      if (data.role === 'elderly') {
+        navigation.replace('ElderlyApp', { user: data });
+
+      } else if (data.role === 'caregiver') {
+        if (data.hasConnection) {
+          navigation.replace('CaregiverApp', { user: data });
+        } else {
+          Alert.alert(
+            "Connect with Elder",
+            "You need to connect with an elder first. Enter their connection code.",
+            [{
+              text: "OK",
+              onPress: () => navigation.navigate('ConnectScreen', { 
+                role: data.role, 
+                userId: data.id 
+              })
+            }]
+          );
         }
-      } else {
-        Alert.alert("Login Failed", data.message || "Invalid credentials");
+
+      } else if (data.role === 'doctor') {
+        if (data.hasConnection) {
+          navigation.replace('DoctorApp', { user: data });
+        } else {
+          Alert.alert(
+            "Connect with Patient",
+            "Enter the patient's registration code to connect.",
+            [{
+              text: "OK",
+              onPress: () => navigation.navigate('ConnectScreen', { 
+                role: data.role, 
+                userId: data.id 
+              })
+            }]
+          );
+        }
       }
-    } catch (error) {
-      console.error(error);
-      Alert.alert("Connection Error", "Could not connect to server. Check your network and backend.");
-    } finally {
-      setLoading(false);
+
+    } else {
+      Alert.alert("Login Failed", data.message || "Invalid credentials");
     }
-  };
+  } catch (error) {
+    console.error(error);
+    Alert.alert("Connection Error", "Could not connect to server.");
+  } finally {
+    setLoading(false);
+  }
+};
 
   return (
     <SafeAreaView style={styles.container}>

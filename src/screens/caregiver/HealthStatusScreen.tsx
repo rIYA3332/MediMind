@@ -29,6 +29,7 @@ interface Regression {
   summary: string; significance: string; significance_note: string;
 }
 interface Stats { min: number; max: number; avg: number; median: number; std: number; latest: number; count: number }
+interface ClinicalStatus { zone: string; label: string; color: string }
 interface VitalAnalysis {
   log_type: string; label: string; unit: string;
   readings: Reading[]; trend_line: number[];
@@ -36,6 +37,7 @@ interface VitalAnalysis {
   data_window_days: number | null;
   data_window_label: string;
   same_day?: boolean;
+  clinical_status?: ClinicalStatus;
   error?: string;
 }
 
@@ -51,36 +53,99 @@ const NORMAL_RANGES: Record<string, string> = {
   temperature:    'Normal: 97–99°F',
   weight:         'Track changes over time',
 };
-const TREND_MEANING: Record<string, Record<string, string>> = {
-  blood_pressure: {
-    rising:  '⚠️ Blood pressure is going up. Consider consulting a doctor if it stays high.',
-    falling: '✅ Blood pressure is coming down. Keep monitoring regularly.',
-    stable:  '✅ Blood pressure is steady. No immediate concern.',
-  },
-  blood_sugar: {
-    rising:  '⚠️ Blood sugar is rising. Check diet and medication schedule.',
-    falling: '⚠️ Blood sugar is dropping. Ensure regular meals and snacks.',
-    stable:  '✅ Blood sugar is stable. Keep up the current routine.',
-  },
-  heart_rate: {
-    rising:  '⚠️ Heart rate is increasing. Watch for symptoms like chest pain or breathlessness.',
-    falling: '✅ Heart rate is slowing. Normal if resting — consult a doctor if very low.',
-    stable:  '✅ Heart rate is normal and steady.',
-  },
-  temperature: {
-    rising:  '⚠️ Temperature is rising. Watch for signs of fever or infection.',
-    falling: '✅ Temperature is dropping back toward normal.',
-    stable:  '✅ Temperature is normal.',
-  },
-  weight: {
-    rising:  'ℹ️ Weight is increasing. Monitor diet and fluid intake.',
-    falling: 'ℹ️ Weight is decreasing. Ensure adequate nutrition.',
-    stable:  '✅ Weight is stable.',
-  },
-};
 const PERIOD_LABELS: Record<number, string> = {
   7: 'Last 7 Days', 14: 'Last 14 Days', 30: 'Last 30 Days',
 };
+
+// ─── Trend meaning — clinical-zone + direction aware ─────────────────────────
+function getTrendMeaning(
+  log_type: string,
+  trend: string,
+  latestValue: number,
+  clinicalZone?: string,
+): string {
+  const zone = clinicalZone || 'unknown';
+
+  if (log_type === 'blood_pressure') {
+    const zoneMsg: Record<string, string> = {
+      crisis:   '🚨 Blood pressure is at a dangerous level. Seek medical attention now.',
+      high:     '⚠️ Blood pressure is high. Consult a doctor if this persists.',
+      elevated: '⚠️ Blood pressure is slightly elevated. Monitor closely.',
+      normal:   '✅ Blood pressure is within normal range.',
+      low:      '🔵 Blood pressure is low. Watch for dizziness or fainting.',
+    };
+    const trendSuffix: Record<string, string> = {
+      rising:  ' It has been trending upward recently.',
+      falling: ' It has been trending downward recently.',
+      stable:  '',
+    };
+    return (zoneMsg[zone] ?? '📊 Blood pressure recorded.') + (trendSuffix[trend] ?? '');
+  }
+
+  if (log_type === 'blood_sugar') {
+    if (zone === 'crisis' && latestValue < 70)
+      return '🚨 Blood sugar is critically low. Give sugar immediately and call a doctor.';
+    if (zone === 'crisis')
+      return '🚨 Blood sugar is critically high. Check insulin and seek urgent care.';
+    const zoneMsg: Record<string, string> = {
+      high:     '⚠️ Blood sugar is high. Review diet and medication schedule.',
+      elevated: '⚠️ Blood sugar is slightly elevated. Monitor food intake.',
+      normal:   '✅ Blood sugar is within normal range.',
+      low:      '🔵 Blood sugar is low. Ensure regular meals and snacks.',
+    };
+    const trendSuffix: Record<string, string> = {
+      rising:  ' Levels have been rising — check diet and dosage.',
+      falling: ' Levels are dropping — watch for hypoglycaemia signs.',
+      stable:  '',
+    };
+    return (zoneMsg[zone] ?? '📊 Blood sugar recorded.') + (trendSuffix[trend] ?? '');
+  }
+
+  if (log_type === 'heart_rate') {
+    if (zone === 'crisis' && latestValue < 60)
+      return '🚨 Heart rate is critically low. Seek immediate medical care.';
+    if (zone === 'crisis')
+      return '🚨 Heart rate is critically high. Seek immediate medical care.';
+    const zoneMsg: Record<string, string> = {
+      high:   '⚠️ Heart rate is elevated. Watch for breathlessness or chest pain.',
+      normal: '✅ Heart rate is normal.',
+      low:    '🔵 Heart rate is low. Normal if resting — consult a doctor if persistent.',
+    };
+    const trendSuffix: Record<string, string> = {
+      rising:  ' It has been trending upward — monitor for symptoms.',
+      falling: ' It has been trending downward — consult a doctor if it drops further.',
+      stable:  '',
+    };
+    return (zoneMsg[zone] ?? '📊 Heart rate recorded.') + (trendSuffix[trend] ?? '');
+  }
+
+  if (log_type === 'temperature') {
+    if (zone === 'crisis')
+      return '🚨 High fever detected. Seek urgent medical care immediately.';
+    const zoneMsg: Record<string, string> = {
+      high:   '⚠️ Fever detected. Monitor closely and ensure hydration.',
+      normal: '✅ Temperature is normal.',
+      low:    '🔵 Temperature is low — watch for hypothermia signs.',
+    };
+    const trendSuffix: Record<string, string> = {
+      rising:  ' Temperature is rising — watch for fever.',
+      falling: ' Temperature is dropping back toward normal.',
+      stable:  '',
+    };
+    return (zoneMsg[zone] ?? '📊 Temperature recorded.') + (trendSuffix[trend] ?? '');
+  }
+
+  if (log_type === 'weight') {
+    const trendMsg: Record<string, string> = {
+      rising:  'ℹ️ Weight is increasing. Monitor diet and fluid intake.',
+      falling: 'ℹ️ Weight is decreasing. Ensure adequate nutrition.',
+      stable:  '✅ Weight is stable.',
+    };
+    return trendMsg[trend] ?? '📊 Weight recorded.';
+  }
+
+  return '📊 Vital sign recorded.';
+}
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function formatDateShort(raw: string): string {
@@ -146,7 +211,8 @@ const Sparkline: React.FC<{ values: number[]; trendLine: number[]; color: string
 const VitalTrendCard: React.FC<{ vital: VitalAnalysis; requestedDays: number }> = ({ vital, requestedDays }) => {
   const [open, setOpen] = useState(false);
   const { regression: reg, stats, readings, trend_line, label, unit,
-          log_type, data_window_days, data_window_label, same_day } = vital;
+          log_type, data_window_days, data_window_label, same_day,
+          clinical_status } = vital;
 
   if (vital.error) {
     return (
@@ -168,7 +234,15 @@ const VitalTrendCard: React.FC<{ vital: VitalAnalysis; requestedDays: number }> 
   const sparkTrend       = trend_line.slice(startIdx);
 
   const n         = windowedReadings.length;
-  const meaning   = TREND_MEANING[log_type]?.[reg.trend] || reg.summary;
+
+  // ── Use clinical-zone-aware message ──────────────────────────────────────
+  const meaning = getTrendMeaning(
+    log_type,
+    reg.trend,
+    stats.latest,
+    clinical_status?.zone,
+  );
+
   const changeAbs = Math.abs(reg.change_per_week);
   const changeLbl = same_day
     ? `Varied by ${changeAbs} ${unit} across today's readings`

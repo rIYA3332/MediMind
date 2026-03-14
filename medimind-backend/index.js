@@ -547,6 +547,106 @@ app.get('/api/connections/:caregiverId', (req, res) => {
   );
 });
 
+// new
+// ─────────────────────────────────────────────────────────────────────────────
+// ADD BOTH OF THESE ROUTES TO index.js
+// Place them near the other /api/connections routes (around line 180)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// [1] Used by CaregiverNavigator to get the elder's id on startup
+app.get('/api/caregiver/elder/:caregiverId', (req, res) => {
+  db.query(
+    `SELECT u.id, u.name, u.dob, u.phone, u.emergency_contact, c.relationship
+     FROM connections c JOIN users u ON c.elder_id=u.id
+     WHERE c.requester_id=? AND c.status='approved'
+     LIMIT 1`,
+    [req.params.caregiverId],
+    (err, results) => {
+      if (err) return res.status(500).json({ message: 'Error' });
+      if (!results || !results.length) return res.status(404).json({ message: 'No elder connected' });
+      res.json(results[0]);
+    }
+  );
+});
+
+// [2] Used by CaregiverChatScreen to list doctors connected to an elder
+//     Returns each doctor with their latest message preview + unread count
+app.get('/api/doctor/connected/:elderId', async (req, res) => {
+  const { elderId } = req.params;
+  try {
+    const doctors = await dbQuery(
+      `SELECT u.id, u.name, u.phone,
+         NULL AS specialty
+       FROM connections c
+       JOIN users u ON c.requester_id = u.id
+       WHERE c.elder_id = ? AND c.status = 'approved' AND u.role = 'doctor'
+       ORDER BY u.name ASC`,
+      [elderId]
+    );
+    await Promise.all(doctors.map(async (doc) => {
+      const [lastMsg] = await dbQuery(
+        `SELECT message, sent_at FROM chat_messages
+         WHERE elder_id = ? AND (sender_id = ? OR receiver_id = ?)
+         ORDER BY sent_at DESC LIMIT 1`,
+        [elderId, doc.id, doc.id]
+      ).catch(() => []);
+      const [unread] = await dbQuery(
+        `SELECT COUNT(*) AS cnt FROM chat_messages
+         WHERE elder_id = ? AND sender_id = ? AND is_read = 0`,
+        [elderId, doc.id]
+      ).catch(() => [{ cnt: 0 }]);
+      doc.last_message    = lastMsg?.message    || null;
+      doc.last_message_at = lastMsg?.sent_at    || null;
+      doc.unread_count    = unread?.cnt         || 0;
+    }));
+    res.json(doctors);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// [3] UPDATE /api/doctor/patients/:doctorId to include today_alerts per patient
+//     REPLACE the existing route with this version to show today's alerts
+//     in the Priority Patients section of DoctorDashboard
+app.get('/api/doctor/patients/:doctorId', async (req, res) => {
+  const doctorId = parseInt(req.params.doctorId);
+  if (!doctorId) return res.status(400).json({ message: 'Invalid doctorId' });
+  try {
+    const patients = await dbQuery(
+      `SELECT u.id, u.name, u.dob, u.phone, u.gender, u.emergency_contact, c.relationship,
+         (SELECT COUNT(*) FROM alerts a WHERE a.user_id=u.id AND a.is_read=0) AS unread_alerts,
+         (SELECT COUNT(*) FROM health_risks hr WHERE hr.elder_id=u.id AND hr.resolved=0) AS active_risks,
+         (SELECT COUNT(*) FROM health_risks hr2 WHERE hr2.elder_id=u.id AND hr2.severity='critical'
+            AND hr2.detected_at >= DATE_SUB(NOW(), INTERVAL 3 DAY)) AS critical_flags
+       FROM connections c JOIN users u ON c.elder_id=u.id
+       WHERE c.requester_id=? AND c.status='approved'
+       ORDER BY unread_alerts DESC, u.name ASC`,
+      [doctorId]
+    );
+    await Promise.all(patients.map(async p => {
+      const [vitals, risk, mood, todayAlerts] = await Promise.all([
+        dbQuery(`SELECT log_type, value, unit, logged_at FROM health_logs h1
+          WHERE user_id=? AND logged_at=(SELECT MAX(logged_at) FROM health_logs h2
+          WHERE h2.user_id=h1.user_id AND h2.log_type=h1.log_type)`, [p.id]),
+        dbQuery(`SELECT risk_level, risk_score, is_critical FROM ai_risk_scores
+          WHERE elder_id=? ORDER BY assessed_at DESC LIMIT 1`, [p.id]).catch(()=>[]),
+        dbQuery(`SELECT mood, sentiment_label FROM mood_logs
+          WHERE user_id=? ORDER BY logged_at DESC LIMIT 1`, [p.id]).catch(()=>[]),
+        // ✅ Today's alerts for priority cards
+        dbQuery(`SELECT id, alert_type, message, priority, created_at FROM alerts
+          WHERE user_id=? AND DATE(created_at)=CURDATE()
+          ORDER BY FIELD(priority,'critical','high','medium','low'), created_at DESC
+          LIMIT 5`, [p.id]).catch(()=>[]),
+      ]);
+      p.latest_vitals  = vitals;
+      p.latest_risk    = risk[0]        || null;
+      p.latest_mood    = mood[0]        || null;
+      p.today_alerts   = todayAlerts    || [];
+    }));
+    res.json(patients);
+  } catch (err) { res.status(500).json({ message: err.message }); }
+});
+
 // =============================================================================
 // PUSH TOKEN
 // =============================================================================
@@ -3299,7 +3399,282 @@ db.query(`
   if (err) console.log('[risk] Table creation warning:', err.message);
   else console.log('[risk] ai_risk_scores table ready');
 });
+// =============================================================================
+// DOCTOR ROUTES — paste this entire block into index.js
+// Creates tables: chat_messages, medical_conditions, care_plans
+// =============================================================================
 
+// ── Auto-create tables on startup ────────────────────────────────────────────
+db.query(`CREATE TABLE IF NOT EXISTS chat_messages (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  elder_id INT NOT NULL, sender_id INT NOT NULL, receiver_id INT NOT NULL,
+  sender_role ENUM('doctor','caregiver') NOT NULL,
+  message TEXT NOT NULL, is_read TINYINT(1) DEFAULT 0,
+  sent_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_elder(elder_id), INDEX idx_recv(receiver_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`, err => {
+  if (err && !err.message.includes('already')) console.log('[chat_messages]:', err.message);
+  else console.log('[chat_messages] table ready');
+});
+
+db.query(`CREATE TABLE IF NOT EXISTS medical_conditions (
+  id INT AUTO_INCREMENT PRIMARY KEY, elder_id INT NOT NULL,
+  \`condition\` VARCHAR(255) NOT NULL, diagnosed_at VARCHAR(50),
+  notes TEXT, added_by INT,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_elder(elder_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`, err => {
+  if (err && !err.message.includes('already')) console.log('[medical_conditions]:', err.message);
+  else console.log('[medical_conditions] table ready');
+});
+
+db.query(`CREATE TABLE IF NOT EXISTS care_plans (
+  id INT AUTO_INCREMENT PRIMARY KEY, elder_id INT NOT NULL, doctor_id INT NOT NULL,
+  title VARCHAR(255) NOT NULL, notes TEXT,
+  priority ENUM('low','medium','high','critical') DEFAULT 'medium',
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_elder(elder_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`, err => {
+  if (err && !err.message.includes('already')) console.log('[care_plans]:', err.message);
+});
+
+// =============================================================================
+// GET /api/doctor/patients/:doctorId
+// All elderly patients connected to this doctor, with latest vitals/risk/mood
+// =============================================================================
+app.get('/api/doctor/patients/:doctorId', async (req, res) => {
+  const doctorId = parseInt(req.params.doctorId);
+  if (!doctorId) return res.status(400).json({ message: 'Invalid doctorId' });
+  try {
+    const patients = await dbQuery(
+      `SELECT u.id, u.name, u.dob, u.phone, u.gender, u.emergency_contact, c.relationship,
+         (SELECT COUNT(*) FROM alerts a WHERE a.user_id=u.id AND a.is_read=0) AS unread_alerts,
+         (SELECT COUNT(*) FROM health_risks hr WHERE hr.elder_id=u.id AND hr.resolved=0) AS active_risks,
+         (SELECT COUNT(*) FROM health_risks hr2 WHERE hr2.elder_id=u.id AND hr2.severity='critical'
+            AND hr2.detected_at >= DATE_SUB(NOW(), INTERVAL 3 DAY)) AS critical_flags
+       FROM connections c JOIN users u ON c.elder_id=u.id
+       WHERE c.requester_id=? AND c.status='approved'
+       ORDER BY unread_alerts DESC, u.name ASC`,
+      [doctorId]
+    );
+    await Promise.all(patients.map(async p => {
+      const [vitals, risk, mood] = await Promise.all([
+        dbQuery(`SELECT log_type, value, unit, logged_at FROM health_logs h1
+          WHERE user_id=? AND logged_at=(SELECT MAX(logged_at) FROM health_logs h2
+          WHERE h2.user_id=h1.user_id AND h2.log_type=h1.log_type)`, [p.id]),
+        dbQuery(`SELECT risk_level, risk_score, is_critical FROM ai_risk_scores
+          WHERE elder_id=? ORDER BY assessed_at DESC LIMIT 1`, [p.id]).catch(()=>[]),
+        dbQuery(`SELECT mood, sentiment_label FROM mood_logs
+          WHERE user_id=? ORDER BY logged_at DESC LIMIT 1`, [p.id]).catch(()=>[]),
+      ]);
+      p.latest_vitals = vitals;
+      p.latest_risk   = risk[0]  || null;
+      p.latest_mood   = mood[0]  || null;
+    }));
+    res.json(patients);
+  } catch (err) { res.status(500).json({ message: err.message }); }
+});
+
+// =============================================================================
+// GET /api/doctor/patient/:elderId/full
+// =============================================================================
+app.get('/api/doctor/patient/:elderId/full', async (req, res) => {
+  const { elderId } = req.params;
+  try {
+    const [pat] = await dbQuery(
+      `SELECT id, name, dob, phone, gender, emergency_contact FROM users WHERE id=?`, [elderId]
+    );
+    if (!pat) return res.status(404).json({ message: 'Not found' });
+
+    const [vitals, meds, logs, risks, moods, activity, cg, riskScore, conditions, plans] =
+      await Promise.all([
+        dbQuery(`SELECT log_type, value, unit, logged_at FROM health_logs h1
+          WHERE user_id=? AND logged_at=(SELECT MAX(h2.logged_at) FROM health_logs h2
+          WHERE h2.user_id=h1.user_id AND h2.log_type=h1.log_type)`, [elderId]),
+        dbQuery(`SELECT * FROM medications WHERE user_id=? ORDER BY time`, [elderId]),
+        dbQuery(`SELECT log_type, value, unit, notes, logged_at FROM health_logs
+          WHERE user_id=? ORDER BY logged_at DESC LIMIT 30`, [elderId]),
+        dbQuery(`SELECT risk_type, severity, message, detected_at FROM health_risks
+          WHERE elder_id=? AND resolved=0 ORDER BY detected_at DESC LIMIT 20`, [elderId]),
+        dbQuery(`SELECT mood, notes, sentiment_label, concern_score, logged_at FROM mood_logs
+          WHERE user_id=? ORDER BY logged_at DESC LIMIT 14`, [elderId]),
+        dbQuery(`SELECT activity_type, description, logged_at FROM activity_logs
+          WHERE elder_id=? ORDER BY logged_at DESC LIMIT 20`, [elderId]),
+        dbQuery(`SELECT u.id, u.name, u.phone, c.relationship FROM connections c
+          JOIN users u ON c.requester_id=u.id
+          WHERE c.elder_id=? AND c.status='approved' AND u.role='caregiver' LIMIT 1`,
+          [elderId]).catch(()=>[]),
+        dbQuery(`SELECT risk_level, risk_score, is_critical, alert_message, assessed_at
+          FROM ai_risk_scores WHERE elder_id=? ORDER BY assessed_at DESC LIMIT 1`,
+          [elderId]).catch(()=>[]),
+        dbQuery(`SELECT id, \`condition\`, diagnosed_at, notes FROM medical_conditions
+          WHERE elder_id=? ORDER BY created_at DESC`, [elderId]).catch(()=>[]),
+        dbQuery(`SELECT cp.*, u.name AS doctor_name FROM care_plans cp
+          JOIN users u ON cp.doctor_id=u.id
+          WHERE cp.elder_id=? ORDER BY cp.created_at DESC LIMIT 10`,
+          [elderId]).catch(()=>[]),
+      ]);
+
+    res.json({
+      patient: pat, latest_vitals: vitals, medications: meds, recent_health_logs: logs,
+      active_risks: risks, mood_history: moods, activity_feed: activity,
+      caregiver: cg[0]||null, latest_risk_score: riskScore[0]||null,
+      medical_conditions: conditions, care_plans: plans,
+    });
+  } catch (err) { res.status(500).json({ message: err.message }); }
+});
+
+// =============================================================================
+// POST /api/doctor/add-medication
+// =============================================================================
+app.post('/api/doctor/add-medication', async (req, res) => {
+  const { elderId, doctorId, name, dosage, frequency, time, notes } = req.body;
+  if (!elderId || !name) return res.status(400).json({ message: 'elderId and name required' });
+  try {
+    const result = await dbQuery(
+      `INSERT INTO medications (user_id, name, dosage, frequency, time, notes) VALUES (?,?,?,?,?,?)`,
+      [elderId, name, dosage||null, frequency||null, time||null, notes||null]
+    );
+    if (time) await dbQuery(
+      `INSERT INTO medication_reminder (medication_id, reminder_time, is_active) VALUES (?,?,1)`,
+      [result.insertId, time]
+    );
+    logActivity(elderId, 'medication_updated', `Doctor prescribed "${name}"${dosage ? ` ${dosage}` : ''}`);
+    res.json({ message: 'Medication added', id: result.insertId });
+  } catch (err) { res.status(500).json({ message: err.message }); }
+});
+
+// =============================================================================
+// PUT /api/doctor/update-medication/:medId
+// =============================================================================
+app.put('/api/doctor/update-medication/:medId', async (req, res) => {
+  const { name, dosage, frequency, time, notes } = req.body;
+  try {
+    await dbQuery(
+      `UPDATE medications SET name=?, dosage=?, frequency=?, time=?, notes=? WHERE id=?`,
+      [name, dosage||null, frequency||null, time||null, notes||null, req.params.medId]
+    );
+    if (time) await dbQuery(
+      `UPDATE medication_reminder SET reminder_time=? WHERE medication_id=?`, [time, req.params.medId]
+    );
+    res.json({ message: 'Updated' });
+  } catch (err) { res.status(500).json({ message: err.message }); }
+});
+
+// =============================================================================
+// POST /api/doctor/care-plan
+// =============================================================================
+app.post('/api/doctor/care-plan', async (req, res) => {
+  const { elderId, doctorId, title, notes, priority } = req.body;
+  if (!elderId || !doctorId || !title) return res.status(400).json({ message: 'Missing fields' });
+  try {
+    const r = await dbQuery(
+      `INSERT INTO care_plans (elder_id, doctor_id, title, notes, priority) VALUES (?,?,?,?,?)`,
+      [elderId, doctorId, title, notes||null, priority||'medium']
+    );
+    // Notify caregiver
+    const cg = await dbQuery(
+      `SELECT requester_id FROM connections WHERE elder_id=? AND status='approved'
+       AND (SELECT role FROM users WHERE id=requester_id)='caregiver' LIMIT 1`, [elderId]
+    ).catch(()=>[]);
+    if (cg[0]) await dbQuery(
+      `INSERT INTO alerts (user_id,caregiver_id,alert_type,message,is_read,priority,created_at)
+       VALUES (?,?,'care_plan',?,0,?,NOW())`,
+      [elderId, cg[0].requester_id, `📋 Doctor added: "${title}"`, priority||'medium']
+    );
+    res.json({ message: 'Saved', id: r.insertId });
+  } catch (err) { res.status(500).json({ message: err.message }); }
+});
+
+// =============================================================================
+// POST/DELETE /api/doctor/medical-condition
+// =============================================================================
+app.post('/api/doctor/medical-condition', async (req, res) => {
+  const { elderId, doctorId, condition, diagnosedAt, notes } = req.body;
+  if (!elderId || !condition) return res.status(400).json({ message: 'Missing fields' });
+  try {
+    const r = await dbQuery(
+      `INSERT INTO medical_conditions (elder_id, \`condition\`, diagnosed_at, notes, added_by)
+       VALUES (?,?,?,?,?)`, [elderId, condition, diagnosedAt||null, notes||null, doctorId||null]
+    );
+    res.json({ message: 'Added', id: r.insertId });
+  } catch (err) { res.status(500).json({ message: err.message }); }
+});
+
+app.delete('/api/doctor/medical-condition/:id', async (req, res) => {
+  try {
+    await dbQuery(`DELETE FROM medical_conditions WHERE id=?`, [req.params.id]);
+    res.json({ message: 'Removed' });
+  } catch (err) { res.status(500).json({ message: err.message }); }
+});
+
+// =============================================================================
+// CHAT ROUTES
+// =============================================================================
+app.get('/api/chat/:elderId/:userId', async (req, res) => {
+  const { elderId, userId } = req.params;
+  try {
+    const msgs = await dbQuery(
+      `SELECT cm.*, u.name AS sender_name FROM chat_messages cm
+       JOIN users u ON cm.sender_id=u.id
+       WHERE cm.elder_id=? AND (cm.sender_id=? OR cm.receiver_id=?)
+       ORDER BY cm.sent_at ASC LIMIT 100`,
+      [elderId, userId, userId]
+    );
+    await dbQuery(
+      `UPDATE chat_messages SET is_read=1 WHERE elder_id=? AND receiver_id=? AND is_read=0`,
+      [elderId, userId]
+    );
+    res.json(msgs);
+  } catch (err) { res.status(500).json({ message: err.message }); }
+});
+
+app.post('/api/chat/send', async (req, res) => {
+  const { elderId, senderId, receiverId, senderRole, message } = req.body;
+  if (!elderId || !senderId || !receiverId || !message)
+    return res.status(400).json({ message: 'Missing fields' });
+  try {
+    const r = await dbQuery(
+      `INSERT INTO chat_messages (elder_id, sender_id, receiver_id, sender_role, message)
+       VALUES (?,?,?,?,?)`, [elderId, senderId, receiverId, senderRole, message]
+    );
+    const [recv] = await dbQuery(`SELECT expo_push_token FROM users WHERE id=?`, [receiverId]);
+    const [sndr] = await dbQuery(`SELECT name FROM users WHERE id=?`, [senderId]);
+    if (recv?.expo_push_token) sendPushNotification(
+      recv.expo_push_token, `💬 ${sndr?.name||'Message'}`,
+      message.length > 80 ? message.slice(0,80)+'…' : message,
+      { screen:'PatientDetail', elderId }
+    );
+    res.json({ message:'Sent', id:r.insertId });
+  } catch (err) { res.status(500).json({ message: err.message }); }
+});
+
+app.get('/api/chat/unread/:userId', async (req, res) => {
+  try {
+    const [r] = await dbQuery(
+      `SELECT COUNT(*) AS cnt FROM chat_messages WHERE receiver_id=? AND is_read=0`,
+      [req.params.userId]
+    );
+    res.json({ unread: r?.cnt || 0 });
+  } catch (err) { res.status(500).json({ message: err.message }); }
+});
+
+// =============================================================================
+// GET /api/doctor/alerts/:doctorId — unread alerts from all connected patients
+// =============================================================================
+app.get('/api/doctor/alerts/:doctorId', async (req, res) => {
+  try {
+    const alerts = await dbQuery(
+      `SELECT a.*, u.name AS elder_name FROM alerts a
+       JOIN users u ON a.user_id=u.id
+       JOIN connections c ON c.elder_id=u.id AND c.requester_id=? AND c.status='approved'
+       WHERE a.is_read=0
+       ORDER BY FIELD(a.priority,'critical','high','medium','low'), a.created_at DESC
+       LIMIT 50`, [req.params.doctorId]
+    );
+    res.json(alerts);
+  } catch (err) { res.status(500).json({ message: err.message }); }
+});
 // =============================================================================
 const PORT = 3000;
 app.listen(PORT, '0.0.0.0', () => {

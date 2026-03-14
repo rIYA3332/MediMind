@@ -29,14 +29,15 @@ VITAL_META = {
     'weight':         {'label': 'Weight',         'unit': 'kg',    'normal_range': 'Track changes'},
 }
 
+# Thresholds per day — how much must slope exceed to not be "stable"
 STABLE_THRESHOLDS = {
-    'blood_pressure': 0.15,
-    'blood_sugar':    0.30,
-    'heart_rate':     0.10,
-    'temperature':    0.02,
-    'weight':         0.02,
+    'blood_pressure': 0.25,   # 0.25 mmHg/day = ~1.75/week
+    'blood_sugar':    0.40,   # 0.40 mg/dL/day = ~2.8/week
+    'heart_rate':     0.15,   # 0.15 bpm/day = ~1/week
+    'temperature':    0.015,  # 0.015°F/day
+    'weight':         0.03,   # 0.03 kg/day = ~0.2kg/week
 }
-DEFAULT_STABLE_THRESHOLD = 0.10
+DEFAULT_STABLE_THRESHOLD = 0.15
 
 # ─── RF model path & cache ────────────────────────────────────────────────────
 
@@ -106,14 +107,83 @@ def _significance(p_value, n):
 
 
 def _classify_trend(slope: float, r_squared: float, log_type: str) -> str:
-    if r_squared < 0.10:
-        return 'stable'
     threshold = STABLE_THRESHOLDS.get(log_type, DEFAULT_STABLE_THRESHOLD)
-    if slope > threshold:
+
+    # When fit is weak (noisy data / few points), require a larger slope
+    # to call it a trend — prevents noise being misread as a real trend.
+    # But we never fully veto on r_squared alone: a steep slope on noisy
+    # data (heart rate 90→55 over a week with day-to-day variance) IS real.
+    if r_squared < 0.10:
+        effective_threshold = threshold * 3.0   # need 3× slope to override very weak fit
+    elif r_squared < 0.25:
+        effective_threshold = threshold * 1.5
+    else:
+        effective_threshold = threshold
+
+    if slope > effective_threshold:
         return 'rising'
-    if slope < -threshold:
+    if slope < -effective_threshold:
         return 'falling'
     return 'stable'
+
+
+def _clinical_status(log_type: str, latest_value: float) -> dict:
+    """
+    Returns the current clinical zone for the latest reading.
+    Sent to the frontend so messages are contextually aware of
+    where the value actually sits, independent of trend direction.
+    """
+    v = latest_value
+
+    if log_type == 'blood_pressure':
+        # latest_value is the systolic component
+        if v >= 180:
+            return {'zone': 'crisis',   'label': 'Hypertensive crisis', 'color': '#d63031'}
+        if v >= 140:
+            return {'zone': 'high',     'label': 'High',                'color': '#e17055'}
+        if v >= 120:
+            return {'zone': 'elevated', 'label': 'Elevated',            'color': '#fdcb6e'}
+        if v >= 90:
+            return {'zone': 'normal',   'label': 'Normal',              'color': '#00b894'}
+        return     {'zone': 'low',      'label': 'Low',                 'color': '#0984e3'}
+
+    if log_type == 'blood_sugar':
+        if v >= 250:
+            return {'zone': 'crisis',   'label': 'Critically high',     'color': '#d63031'}
+        if v >= 180:
+            return {'zone': 'high',     'label': 'High',                'color': '#e17055'}
+        if v >= 100:
+            return {'zone': 'elevated', 'label': 'Elevated',            'color': '#fdcb6e'}
+        if v >= 70:
+            return {'zone': 'normal',   'label': 'Normal',              'color': '#00b894'}
+        if v >= 54:
+            return {'zone': 'low',      'label': 'Low',                 'color': '#0984e3'}
+        return     {'zone': 'crisis',   'label': 'Critically low',      'color': '#d63031'}
+
+    if log_type == 'heart_rate':
+        if v >= 150:
+            return {'zone': 'crisis',   'label': 'Critically high',     'color': '#d63031'}
+        if v >= 100:
+            return {'zone': 'high',     'label': 'High',                'color': '#e17055'}
+        if v >= 60:
+            return {'zone': 'normal',   'label': 'Normal',              'color': '#00b894'}
+        if v >= 50:
+            return {'zone': 'low',      'label': 'Low',                 'color': '#0984e3'}
+        return     {'zone': 'crisis',   'label': 'Critically low',      'color': '#d63031'}
+
+    if log_type == 'temperature':
+        if v >= 103:
+            return {'zone': 'crisis',   'label': 'High fever',               'color': '#d63031'}
+        if v >= 100.4:
+            return {'zone': 'high',     'label': 'Fever',                    'color': '#e17055'}
+        if v >= 97:
+            return {'zone': 'normal',   'label': 'Normal',                   'color': '#00b894'}
+        return     {'zone': 'low',      'label': 'Low — hypothermia risk',   'color': '#0984e3'}
+
+    if log_type == 'weight':
+        return {'zone': 'neutral', 'label': 'Tracking', 'color': '#636e72'}
+
+    return {'zone': 'unknown', 'label': 'Unknown', 'color': '#636e72'}
 
 
 def safe_float(val, default=0.0):
@@ -267,13 +337,14 @@ def _run_regression(log_type, readings):
     ]
 
     return {
-        'log_type':   log_type,
-        'label':      meta['label'],
-        'unit':       meta['unit'],
-        'readings':   reading_objects,
-        'trend_line': trend_line,
-        'same_day':   same_day,
-        'data_note':  data_note,
+        'log_type':        log_type,
+        'label':           meta['label'],
+        'unit':            meta['unit'],
+        'readings':        reading_objects,
+        'trend_line':      trend_line,
+        'same_day':        same_day,
+        'data_note':       data_note,
+        'clinical_status': _clinical_status(log_type, _r(ys[-1])),
         'regression': {
             'slope':             _r(slope, 4),
             'intercept':         _r(intercept, 4),
@@ -527,22 +598,14 @@ def assess_risk(request):
         'assessment':    detail,
         'features_used': used_features,
     })
-# new
+
+
 # =============================================================================
-# PASTE THIS BLOCK INTO regression/views.py
-# (append after the existing risk/assess views)
-# =============================================================================
-# Requires:  regression/sentiment_model.py  (already trained)
-#            regression/sentiment_lr_model.pkl  (generated by training)
-#
-# Endpoints added:
-#   POST /api/regression/sentiment/analyze/
-#   GET  /api/regression/sentiment/health/
+# SENTIMENT
 # =============================================================================
 
 import os as _os
 
-# ── Lazy import of sentiment model ────────────────────────────────────────────
 _sentiment_module = None
 
 def _get_sentiment_module():
@@ -559,49 +622,15 @@ def _get_sentiment_module():
     return _sentiment_module
 
 
-# =============================================================================
-# POST /api/regression/sentiment/analyze/
-# =============================================================================
-# Request body:
-# {
-#   "elder_id"    : 30,
-#   "mood"        : "sad",
-#   "notes"       : "Miss my family today...",   (optional)
-#   "mood_streak" : 2,                           (optional, default 0)
-#   "hour"        : 20                           (optional, default 12)
-# }
-#
-# Response:
-# {
-#   "elder_id"        : 30,
-#   "assessment"      : {
-#       "sentiment_label" : "CONCERNING",
-#       "sentiment_emoji" : "⚠️",
-#       "sentiment_color" : "#fdcb6e",
-#       "concern_score"   : 64.8,
-#       "label_index"     : 2,
-#       "probabilities"   : { "positive": 0.05, "neutral": 0.10, "concerning": 0.72, "critical": 0.13 },
-#       "reasons"         : ["Selected mood 'sad' indicates emotional difficulty", "..."],
-#       "advice"          : "The elder seems sad. A phone call today would help greatly.",
-#       "should_alert"    : true,
-#       "alert_priority"  : "high",
-#       "has_notes"       : true,
-#       "mood_streak"     : 2,
-#       "mood_input"      : "sad",
-#       "notes_input"     : "Miss my family today..."
-#   },
-#   "generated_at" : "2025-01-01T10:00:00Z"
-# }
-# =============================================================================
 @api_view(['POST'])
 def assess_sentiment(request):
     try:
-        data       = request.data
-        elder_id   = data.get('elder_id', 0)
-        mood       = str(data.get('mood', 'neutral')).lower().strip()
-        notes      = str(data.get('notes', '') or '')
+        data        = request.data
+        elder_id    = data.get('elder_id', 0)
+        mood        = str(data.get('mood', 'neutral')).lower().strip()
+        notes       = str(data.get('notes', '') or '')
         mood_streak = int(data.get('mood_streak', 0))
-        hour       = int(data.get('hour', 12))
+        hour        = int(data.get('hour', 12))
 
         valid_moods = {'happy', 'neutral', 'sad', 'anxious', 'tired', 'lonely'}
         if mood not in valid_moods:
@@ -610,8 +639,8 @@ def assess_sentiment(request):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        mod        = _get_sentiment_module()
-        result     = mod.predict_sentiment(mood, notes, mood_streak, hour)
+        mod    = _get_sentiment_module()
+        result = mod.predict_sentiment(mood, notes, mood_streak, hour)
 
         from datetime import datetime, timezone
         return Response({
@@ -634,9 +663,6 @@ def assess_sentiment(request):
         )
 
 
-# =============================================================================
-# GET /api/regression/sentiment/health/
-# =============================================================================
 @api_view(['GET'])
 def sentiment_health(request):
     try:
@@ -644,11 +670,11 @@ def sentiment_health(request):
         mod.load_model()
         test = mod.predict_sentiment('happy', 'Feeling great today', 0, 10)
         return Response({
-            'status':       'ok',
-            'model':        'LogisticRegression',
-            'test_score':   test['concern_score'],
-            'test_label':   test['sentiment_label'],
-            'model_path':   mod.MODEL_PATH,
+            'status':     'ok',
+            'model':      'LogisticRegression',
+            'test_score': test['concern_score'],
+            'test_label': test['sentiment_label'],
+            'model_path': mod.MODEL_PATH,
         })
     except Exception as e:
         return Response(

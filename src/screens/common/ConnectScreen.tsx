@@ -47,7 +47,11 @@ const ConnectScreen = ({ route, navigation }: any) => {
         Alert.alert(
           "Success", 
           data.message, 
-          [{ text: "OK", onPress: () => navigation.navigate('CaregiverApp', { user: { id: userId } }) }]
+          // AFTER — doctor goes to DoctorApp
+[{ text: "OK", onPress: () => navigation.navigate(
+  role === 'doctor' ? 'DoctorApp' : 'CaregiverApp', 
+  { user: { id: userId } }
+)}]
         );
       } else {
         Alert.alert("Request Failed", data.message);
