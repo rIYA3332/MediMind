@@ -150,7 +150,7 @@ const DoctorDashboard = ({ route, navigation }: any) => {
           {needsAlert > 0 && (
             <View style={S.liveChip}>
               <View style={S.liveDot} />
-              <Text style={S.liveTxt}>Live</Text>
+              <Text style={S.liveTxt}></Text>
             </View>
           )}
         </View>

@@ -767,6 +767,8 @@ app.get('/api/medications/today/:userId', (req, res) => {
   );
 });
 
+
+
 // =============================================================================
 // HEALTH LOGS
 // =============================================================================
@@ -3527,37 +3529,151 @@ app.get('/api/doctor/patient/:elderId/full', async (req, res) => {
 // =============================================================================
 // POST /api/doctor/add-medication
 // =============================================================================
+// REPLACE WITH:
+// =============================================================================
+// PASTE THIS INTO index.js
+// FIND the three helper functions block and the POST /api/doctor/add-medication route
+// REPLACE both with this entire block
+// =============================================================================
+
+// ── Helper: find the caregiver connected to an elder ─────────────────────────
+async function getCaregiverForElder(elderId) {
+  const cg = await dbQuery(
+    `SELECT u.id, u.expo_push_token, u.name
+     FROM connections c
+     JOIN users u ON c.requester_id = u.id
+     WHERE c.elder_id = ? AND c.status = 'approved' AND u.role = 'caregiver'
+     LIMIT 1`,
+    [elderId]
+  ).catch(() => []);
+  return cg[0] || null;
+}
+
+// ── Helper: get a user's name by id ──────────────────────────────────────────
+async function getNameById(id) {
+  if (!id) return null;
+  const rows = await dbQuery(
+    `SELECT name FROM users WHERE id = ?`, [id]
+  ).catch(() => []);
+  return rows[0]?.name || null;
+}
+
+// ── Helper: insert alert + push notification to caregiver ────────────────────
+async function alertCaregiver(elderId, caregiver, message, priority = 'medium') {
+  if (!caregiver) return;
+  await dbQuery(
+    `INSERT INTO alerts
+       (user_id, caregiver_id, alert_type, message, is_read, priority, created_at)
+     VALUES (?, ?, 'medication_updated', ?, 0, ?, NOW())`,
+    [elderId, caregiver.id, message, priority]
+  ).catch(err => console.log('[alertCaregiver] DB error:', err.message));
+
+  if (caregiver.expo_push_token) {
+    await sendPushNotification(
+      caregiver.expo_push_token,
+      '💊 New Prescription',
+      message,
+      { screen: 'Alerts', elderId }
+    );
+  }
+}
+
+// =============================================================================
+// POST /api/doctor/add-medication
+// REPLACE the existing route entirely with this version
+// =============================================================================
 app.post('/api/doctor/add-medication', async (req, res) => {
   const { elderId, doctorId, name, dosage, frequency, time, notes } = req.body;
   if (!elderId || !name) return res.status(400).json({ message: 'elderId and name required' });
   try {
+    // 1. Insert medication record
     const result = await dbQuery(
-      `INSERT INTO medications (user_id, name, dosage, frequency, time, notes) VALUES (?,?,?,?,?,?)`,
-      [elderId, name, dosage||null, frequency||null, time||null, notes||null]
+      `INSERT INTO medications (user_id, name, dosage, frequency, time, notes)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [elderId, name, dosage || null, frequency || null, time || null, notes || null]
     );
-    if (time) await dbQuery(
-      `INSERT INTO medication_reminder (medication_id, reminder_time, is_active) VALUES (?,?,1)`,
-      [result.insertId, time]
+
+    // 2. Insert reminder if time provided
+    if (time) {
+      await dbQuery(
+        `INSERT INTO medication_reminder (medication_id, reminder_time, is_active)
+         VALUES (?, ?, 1)`,
+        [result.insertId, time]
+      );
+    }
+
+    // 3. Look up doctor name, elder name, and connected caregiver in parallel
+    const [cg, drName, elName] = await Promise.all([
+      getCaregiverForElder(elderId),
+      getNameById(doctorId),
+      getNameById(elderId),
+    ]);
+
+    // 4. Build a readable prescription summary
+    const medLabel = [name, dosage, frequency].filter(Boolean).join(', ');
+    const message = `Dr. ${drName || 'Doctor'} prescribed ${medLabel} for ${elName || 'patient'}. Please add this to their daily medication schedule.`;
+
+    // 5. Alert caregiver (DB alert + push notification)
+    await alertCaregiver(elderId, cg, message, 'medium');
+
+    // 6. Log activity
+    logActivity(
+      elderId,
+      'medication_updated',
+      `Dr. ${drName || 'Doctor'} prescribed "${name}"${dosage ? ` ${dosage}` : ''}`
     );
-    logActivity(elderId, 'medication_updated', `Doctor prescribed "${name}"${dosage ? ` ${dosage}` : ''}`);
+
     res.json({ message: 'Medication added', id: result.insertId });
-  } catch (err) { res.status(500).json({ message: err.message }); }
+  } catch (err) {
+    console.error('[add-medication]', err.message);
+    res.status(500).json({ message: err.message });
+  }
 });
 
 // =============================================================================
 // PUT /api/doctor/update-medication/:medId
 // =============================================================================
+// PUT /api/doctor/update-medication/:medId
+// REPLACE the existing version with this — adds caregiver notification
 app.put('/api/doctor/update-medication/:medId', async (req, res) => {
-  const { name, dosage, frequency, time, notes } = req.body;
+  const { name, dosage, frequency, time, notes, elderId, doctorId } = req.body;
+  if (!elderId) return res.status(400).json({ message: 'elderId required' });
   try {
+    // 1. Update the medication
     await dbQuery(
       `UPDATE medications SET name=?, dosage=?, frequency=?, time=?, notes=? WHERE id=?`,
       [name, dosage||null, frequency||null, time||null, notes||null, req.params.medId]
     );
     if (time) await dbQuery(
-      `UPDATE medication_reminder SET reminder_time=? WHERE medication_id=?`, [time, req.params.medId]
+      `UPDATE medication_reminder SET reminder_time=? WHERE medication_id=?`,
+      [time, req.params.medId]
     );
-    res.json({ message: 'Updated' });
+
+    // 2. Look up doctor name, elder name, caregiver
+    const [cg, drName, elName] = await Promise.all([
+      getCaregiverForElder(elderId),
+      getNameById(doctorId),
+      getNameById(elderId),
+    ]);
+
+    // 3. Build change summary
+    const parts = [];
+    if (dosage)    parts.push(`dosage: ${dosage}`);
+    if (frequency) parts.push(`frequency: ${frequency}`);
+    if (notes)     parts.push(`instructions: ${notes}`);
+    const changeStr = parts.length ? parts.join(', ') : 'updated';
+
+    const message = `Dr. ${drName || 'Doctor'} updated "${name}" for ${elName || 'patient'} — ${changeStr}. Please review the schedule.`;
+
+    // 4. Alert caregiver (shows in Prescription tab)
+    await alertCaregiver(elderId, cg, message, 'medium');
+
+    // 5. Log activity
+    logActivity(elderId, 'medication_updated',
+      `Dr. ${drName || 'Doctor'} updated "${name}" — ${changeStr}`
+    );
+
+    res.json({ message: 'Updated and caregiver notified' });
   } catch (err) { res.status(500).json({ message: err.message }); }
 });
 
@@ -3659,6 +3775,7 @@ app.get('/api/chat/unread/:userId', async (req, res) => {
   } catch (err) { res.status(500).json({ message: err.message }); }
 });
 
+
 // =============================================================================
 // GET /api/doctor/alerts/:doctorId — unread alerts from all connected patients
 // =============================================================================
@@ -3674,6 +3791,139 @@ app.get('/api/doctor/alerts/:doctorId', async (req, res) => {
     );
     res.json(alerts);
   } catch (err) { res.status(500).json({ message: err.message }); }
+});
+
+// =============================================================================
+// CARE PLAN — AI Personalized Care Plan via T5 model (port 8002)
+// =============================================================================
+app.post('/api/careplan/generate', async (req, res) => {
+  const { elderId } = req.body;
+  if (!elderId) return res.status(400).json({ message: 'elderId required' });
+
+  try {
+    // 1. Get elder details
+    const [elder] = await dbQuery(
+      `SELECT name, dob, gender FROM users WHERE id = ?`, [elderId]
+    );
+    if (!elder) return res.status(404).json({ message: 'Elder not found' });
+
+    // 2. Calculate age
+    const age = elder.dob
+      ? Math.floor((new Date() - new Date(elder.dob)) / (365.25 * 24 * 60 * 60 * 1000))
+      : 70;
+
+    // 3. Get BMI-based weight category
+    const [weightRow] = await dbQuery(
+      `SELECT value FROM health_logs WHERE user_id=? AND log_type='weight'
+       ORDER BY logged_at DESC LIMIT 1`, [elderId]
+    ).catch(() => []);
+    const [heightRow] = await dbQuery(
+      `SELECT value FROM health_logs WHERE user_id=? AND log_type='height'
+       ORDER BY logged_at DESC LIMIT 1`, [elderId]
+    ).catch(() => []);
+
+    const weightKg  = weightRow  ? parseFloat(weightRow.value)  : 70;
+    const heightCm  = heightRow  ? parseFloat(heightRow.value)  : 170;
+    const bmi       = weightKg / ((heightCm / 100) ** 2);
+    const weight    = bmi >= 30 ? 'obese'
+                    : bmi >= 25 ? 'overweight'
+                    : bmi >= 18.5 ? 'normal weight'
+                    : 'underweight';
+
+    // 4. Get latest vitals
+    const vitals = await dbQuery(
+      `SELECT log_type, value FROM health_logs h1
+       WHERE user_id = ?
+         AND logged_at = (SELECT MAX(logged_at) FROM health_logs h2
+                          WHERE h2.user_id = h1.user_id AND h2.log_type = h1.log_type)`,
+      [elderId]
+    ).catch(() => []);
+
+    const vmap  = {};
+    vitals.forEach(v => { vmap[v.log_type] = v.value; });
+    const bp    = vmap['blood_pressure'] || '120/80';
+    const sugar = vmap['blood_sugar']    || '95';
+    const hr    = vmap['heart_rate']     || '72';
+    const temp  = vmap['temperature']    || '98.4';
+
+    // 5. Get medical conditions
+    const condRows = await dbQuery(
+      `SELECT \`condition\` FROM medical_conditions WHERE elder_id = ?`, [elderId]
+    ).catch(() => []);
+    const conditions = condRows.length
+      ? condRows.map(c => c.condition).join(', ')
+      : 'general health';
+
+    // 6. Call Python T5 service
+    const pyRes = await fetch('http://localhost:8002/api/careplan/generate', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({
+        age, gender: elder.gender || 'male',
+        weight, conditions, bp, sugar, hr, temp,
+      }),
+    });
+
+    const result = await pyRes.json();
+    if (!result.success) throw new Error(result.error || 'Generation failed');
+
+    // 7. Log activity
+    // 7. Save generated plan to care_plans table
+    await dbQuery(
+      `INSERT INTO care_plans (elder_id, doctor_id, title, notes, priority, created_at)
+       VALUES (?, NULL, ?, ?, 'medium', NOW())`,
+      [
+        elderId,
+        `AI Care Plan — ${conditions}`,
+        `DIET: ${result.diet}\n\nEXERCISE: ${result.exercise}\n\nCAUTION: ${result.caution}`,
+      ]
+    ).catch(err => console.log('[careplan] Save to DB warning:', err.message));
+
+    // 8. Log activity
+    logActivity(elderId, 'care_plan_generated',
+      `Care plan generated for: ${conditions}`);
+
+    res.json({
+      success:    true,
+      care_plan:  result.raw,
+      diet:       result.diet,
+      exercise:   result.exercise,
+      caution:    result.caution,
+      patient: {
+        age, gender: elder.gender, weight, conditions,
+        vitals: { bp, sugar, hr, temp },
+      },
+    });
+
+  } catch (err) {
+    console.error('[careplan]', err.message);
+    res.status(500).json({ message: 'Care plan error: ' + err.message });
+  }
+});
+
+// GET care plan for a specific elder (used by caregiver screen)
+app.get('/api/careplan/elder/:elderId', async (req, res) => {
+  try {
+    // Reuse the POST logic by calling it internally
+    const mockReq = { body: { elderId: req.params.elderId } };
+    const mockRes = {
+      status: (code) => ({ json: (data) => res.status(code).json(data) }),
+      json: (data) => res.json(data),
+    };
+    // Just call the generate endpoint
+    const response = await fetch(
+      `http://localhost:3000/api/careplan/generate`,
+      {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ elderId: req.params.elderId }),
+      }
+    );
+    const data = await response.json();
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
 });
 // =============================================================================
 const PORT = 3000;

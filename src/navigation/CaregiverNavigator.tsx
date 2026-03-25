@@ -14,6 +14,7 @@ import HealthStatusScreen         from '../screens/caregiver/HealthStatusScreen'
 import ReportScreen               from '../screens/caregiver/ReportScreen';
 import CaregiverVitalsTrendScreen from '../screens/caregiver/.CaregiverVitalsTrendScreen';
 import CaregiverChatScreen        from '../screens/caregiver/CaregiverChatScreen';
+import CaregiverCarePlanScreen from '../screens/caregiver/CaregiverCarePlanScreen';
 
 import { colors } from '../styles/colors';
 import { RootStackParamList } from './AppNavigator';
@@ -35,6 +36,7 @@ export type CaregiverStackParamList = {
   WeeklyReport:  { elderId: number; elderName: string };
   Report:        { elderId: number; elderName: string };
   VitalsTrend:   { elderId: number; elderName: string };
+  CarePlan:      { elderId: number; elderName: string };
 };
 
 const Tab   = createBottomTabNavigator<CaregiverTabParamList>();
@@ -176,6 +178,7 @@ const CaregiverNavigator: React.FC<Props> = ({ route }) => {
       <Stack.Screen name="WeeklyReport" component={ReportScreen} />
       <Stack.Screen name="Report"       component={ReportScreen} />
       <Stack.Screen name="VitalsTrend"  component={CaregiverVitalsTrendScreen} />
+      <Stack.Screen name="CarePlan" component={CaregiverCarePlanScreen} />
     </Stack.Navigator>
   );
 };

@@ -14,7 +14,7 @@ type ScheduleType = 'medicine' | 'appointment' | 'routine' | 'reminder';
 interface Elder    { id: number; name: string; relationship: string; }
 interface Schedule {
   id: number; elder_id: number; elder_name: string;
-  type: ScheduleType; title: string; description?: string; dosage?: string;
+  type: string; title: string; description?: string; dosage?: string;
   scheduled_time: string; scheduled_days: string[];
   start_date: string; end_date?: string;
   repeat_interval: number; max_reminders: number; is_active: boolean;
@@ -27,21 +27,34 @@ interface FormState {
 }
 
 // ─────────────────────────── constants ───────────────────────────────────────
-const TYPE_CONFIG: Record<ScheduleType, { icon: string; color: string; label: string }> = {
+const TYPE_CONFIG: Record<string, { icon: string; color: string; label: string }> = {
   medicine:    { icon: '💊', color: '#a29bfe', label: 'Medicine'    },
   appointment: { icon: '🏥', color: '#74b9ff', label: 'Appointment' },
   routine:     { icon: '🌿', color: '#00b894', label: 'Routine'     },
   reminder:    { icon: '🔔', color: '#fdcb6e', label: 'Reminder'    },
+  // server may return these aliases
+  medication:  { icon: '💊', color: '#a29bfe', label: 'Medicine'    },
+  task:        { icon: '📋', color: '#fdcb6e', label: 'Task'        },
 };
+
+// ── Safe lookup — NEVER returns undefined ─────────────────────────────────
+const DEFAULT_CFG = { icon: '📋', color: '#636e72', label: 'Schedule' };
+const getTypeCfg  = (type?: string | null) =>
+  (type && TYPE_CONFIG[type]) ? TYPE_CONFIG[type] : DEFAULT_CFG;
+
+const FORM_TYPES: ScheduleType[] = ['medicine', 'appointment', 'routine', 'reminder'];
+
 const ALL_DAYS = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
 const TIMES = Array.from({ length: 24 }, (_, h) =>
   [`${String(h).padStart(2,'0')}:00`, `${String(h).padStart(2,'0')}:30`]
 ).flat();
 
 // ─────────────────────────── helpers ─────────────────────────────────────────
-const fmtTime = (t: string) => {
-  if (!t) return '';
-  const [h, m] = t.split(':').map(Number);
+const fmtTime = (t?: string | null): string => {
+  if (!t || !t.includes(':')) return '';
+  const parts = t.split(':');
+  const h = parseInt(parts[0], 10);
+  const m = parseInt(parts[1], 10);
   if (isNaN(h) || isNaN(m)) return t;
   return `${h % 12 || 12}:${String(m).padStart(2,'0')} ${h >= 12 ? 'PM' : 'AM'}`;
 };
@@ -76,8 +89,7 @@ const parseCustomTime = (raw: string): string | null => {
 };
 
 // =============================================================================
-// TIME PICKER — standalone memoized component
-// Lives outside FormModal so typing in the text box doesn't re-render anything else
+// TIME PICKER
 // =============================================================================
 interface TimePickerProps {
   visible: boolean;
@@ -150,10 +162,7 @@ const TimePicker = memo(({ visible, selectedTime, onSelect, onClose }: TimePicke
 });
 
 // =============================================================================
-// FORM MODAL — memoized, receives props instead of reading from parent scope
-// KEY FIX: This is now OUTSIDE ScheduleManagerScreen so it doesn't get
-// re-created on every parent state change. onChangeForm uses useCallback so
-// it stays stable. Result: typing a title/note no longer re-renders the list.
+// FORM MODAL
 // =============================================================================
 interface FormModalProps {
   visible: boolean;
@@ -213,8 +222,8 @@ const FormModal = memo(({ visible, editItem, elders, form, saving, onChangeForm,
           <View style={S.fSection}>
             <Text style={S.fLabel}>Type *</Text>
             <View style={S.typeGrid}>
-              {(Object.keys(TYPE_CONFIG) as ScheduleType[]).map(t => {
-                const c = TYPE_CONFIG[t];
+              {FORM_TYPES.map(t => {
+                const c = getTypeCfg(t);
                 return (
                   <TouchableOpacity key={t}
                     style={[S.typeBtn, form.type === t && { borderColor: c.color, backgroundColor: c.color + '18' }]}
@@ -385,7 +394,7 @@ const ScheduleManagerScreen = ({ navigation }: any) => {
   const [refreshing,  setRefreshing]  = useState(false);
   const [saving,      setSaving]      = useState(false);
   const [filterElder, setFilterElder] = useState<number | null>(null);
-  const [filterType,  setFilterType]  = useState<ScheduleType | 'all'>('all');
+  const [filterType,  setFilterType]  = useState<string>('all');
   const [showForm,    setShowForm]    = useState(false);
   const [editItem,    setEditItem]    = useState<Schedule | null>(null);
 
@@ -398,7 +407,6 @@ const ScheduleManagerScreen = ({ navigation }: any) => {
 
   const [form, setForm] = useState<FormState>(blankForm());
 
-  // Stable callback — won't cause FormModal to re-render on every parent state change
   const handleFormChange = useCallback((updates: Partial<FormState>) => {
     setForm(prev => ({ ...prev, ...updates }));
   }, []);
@@ -483,12 +491,17 @@ const ScheduleManagerScreen = ({ navigation }: any) => {
   const openEdit = (s: Schedule) => {
     setEditItem(s);
     setForm({
-      elderId: s.elder_id, type: s.type, title: s.title,
-      description: s.description || '', dosage: s.dosage || '',
-      scheduledTime: s.scheduled_time.slice(0, 5),
-      scheduledDays: s.scheduled_days,
-      startDate: s.start_date, endDate: s.end_date || '',
-      repeatInterval: s.repeat_interval, maxReminders: s.max_reminders,
+      elderId: s.elder_id,
+      type: (s.type as ScheduleType) || 'medicine',
+      title: s.title,
+      description: s.description || '',
+      dosage: s.dosage || '',
+      scheduledTime: (s.scheduled_time || '').slice(0, 5),
+      scheduledDays: s.scheduled_days || ['daily'],
+      startDate: s.start_date || todayISO(),
+      endDate: s.end_date || '',
+      repeatInterval: s.repeat_interval || 30,
+      maxReminders: s.max_reminders || 3,
     });
     setShowForm(true);
   };
@@ -497,9 +510,10 @@ const ScheduleManagerScreen = ({ navigation }: any) => {
     (!filterElder || s.elder_id === filterElder) &&
     (filterType === 'all' || s.type === filterType)
   );
+
   const grouped: Record<string, Schedule[]> = {};
   filtered.forEach(s => {
-    const k = `${s.elder_id}:${s.elder_name}`;
+    const k = `${s.elder_id}:${s.elder_name || 'Unknown'}`;
     grouped[k] = grouped[k] ? [...grouped[k], s] : [s];
   });
 
@@ -518,10 +532,11 @@ const ScheduleManagerScreen = ({ navigation }: any) => {
         </TouchableOpacity>
       </View>
 
+      {/* Stats bar — only show the 4 form types */}
       <View style={S.statsBar}>
-        {(Object.keys(TYPE_CONFIG) as ScheduleType[]).map(t => {
-          const c = TYPE_CONFIG[t];
-          const cnt = schedules.filter(s => s.type === t).length;
+        {FORM_TYPES.map(t => {
+          const c = getTypeCfg(t);
+          const cnt = schedules.filter(s => s.type === t || (t === 'medicine' && s.type === 'medication')).length;
           return (
             <TouchableOpacity key={t} style={S.statBox}
               onPress={() => setFilterType(filterType === t ? 'all' : t)}>
@@ -578,7 +593,7 @@ const ScheduleManagerScreen = ({ navigation }: any) => {
           )}
 
           {Object.entries(grouped).map(([key, items]) => {
-            const elderName = key.split(':')[1];
+            const elderName = key.split(':').slice(1).join(':');
             return (
               <View key={key}>
                 <View style={S.elderHdr}>
@@ -590,7 +605,8 @@ const ScheduleManagerScreen = ({ navigation }: any) => {
                 </View>
 
                 {items.map(s => {
-                  const c = TYPE_CONFIG[s.type];
+                  // ── SAFE lookup — never crashes even with unknown type ──
+                  const c = getTypeCfg(s.type);
                   return (
                     <View key={s.id} style={[S.card, { borderLeftColor: c.color }]}>
                       <View style={S.cardTop}>
@@ -612,12 +628,12 @@ const ScheduleManagerScreen = ({ navigation }: any) => {
                       <View style={S.cardMeta}>
                         <View style={S.metaItem}>
                           <Text style={S.metaIco}>🕐</Text>
-                          <Text style={S.metaTxt}>{fmtTime(s.scheduled_time)}</Text>
+                          <Text style={S.metaTxt}>{fmtTime(s.scheduled_time) || '—'}</Text>
                         </View>
                         <View style={S.metaItem}>
                           <Text style={S.metaIco}>📅</Text>
                           <Text style={S.metaTxt}>
-                            {s.scheduled_days.includes('daily') ? 'Every day' : s.scheduled_days.join(', ')}
+                            {(s.scheduled_days || []).includes('daily') ? 'Every day' : (s.scheduled_days || []).join(', ') || '—'}
                           </Text>
                         </View>
                         <View style={S.metaItem}>
@@ -626,7 +642,7 @@ const ScheduleManagerScreen = ({ navigation }: any) => {
                         </View>
                       </View>
                       <View style={S.cardDateRow}>
-                        <Text style={S.cardDate}>From: {s.start_date}</Text>
+                        <Text style={S.cardDate}>From: {s.start_date || '—'}</Text>
                         {s.end_date
                           ? <Text style={[S.cardDate, { color: '#e17055' }]}>Until: {s.end_date}</Text>
                           : <Text style={[S.cardDate, { color: '#00b894' }]}>Ongoing</Text>}

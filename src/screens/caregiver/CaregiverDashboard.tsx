@@ -153,6 +153,7 @@ const CaregiverDashboard = ({ navigation }: any) => {
             <TouchableOpacity style={styles.logoutBtn} onPress={handleLogout}>
               <Text style={styles.logoutBtnText}>Logout</Text>
             </TouchableOpacity>
+            
           </View>
         </View>
 
@@ -298,6 +299,7 @@ const CaregiverDashboard = ({ navigation }: any) => {
                       <Text style={[styles.gridItemBadgeText, { color: (s?.todayHealthLogs ?? 0) > 0 ? '#00b894' : '#95a5a6' }]}>{(s?.todayHealthLogs ?? 0) > 0 ? 'Active' : 'None Yet'}</Text>
                     </View>
                   </TouchableOpacity>
+                  
 
                   <View style={styles.todayGridItem}>
                     <Text style={styles.gridItemIcon}>{s?.todayMood ? (moodEmojis[s.todayMood.mood] || '😐') : '😐'}</Text>
@@ -319,6 +321,18 @@ const CaregiverDashboard = ({ navigation }: any) => {
                     </View>
                   </View>
                 </View>
+
+                <TouchableOpacity
+                  style={styles.carePlanBtn}
+                  onPress={() => navigation.navigate('CarePlan', {
+                    elderId:   elder.id,
+                    elderName: elder.name,
+                  })}
+                >
+                  <Text style={styles.carePlanBtnIcon}>🩺</Text>
+                  <Text style={styles.carePlanBtnText}>View Care Plan</Text>
+                  <Text style={styles.carePlanBtnArrow}>›</Text>
+                </TouchableOpacity>
 
                 {s && s.latestVitals && s.latestVitals.length > 0 && (
                   <View style={styles.vitalsRow}>
@@ -446,6 +460,31 @@ const styles = StyleSheet.create({
   actionBtn: { flex: 1, paddingVertical: 10, backgroundColor: colors.background, borderRadius: 10, alignItems: 'center', borderWidth: 1, borderColor: colors.border },
   actionBtnPrimary: { backgroundColor: colors.primary, borderColor: colors.primary },
   actionBtnText: { fontSize: 12, fontWeight: '600', color: colors.textPrimary },
+
+  carePlanBtn: {
+  flexDirection: 'row',
+  alignItems: 'center',
+  backgroundColor: colors.primary,
+  borderRadius: 10,
+  paddingVertical: 12,
+  paddingHorizontal: 16,
+  marginBottom: 14,
+  gap: 8,
+},
+carePlanBtnIcon: {
+  fontSize: 18,
+},
+carePlanBtnText: {
+  flex: 1,
+  fontSize: 14,
+  fontWeight: '700',
+  color: '#fff',
+},
+carePlanBtnArrow: {
+  fontSize: 22,
+  color: 'rgba(255,255,255,0.7)',
+  lineHeight: 22,
+},
 });
 
 export default CaregiverDashboard;
