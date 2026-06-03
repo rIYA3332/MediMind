@@ -9,6 +9,8 @@ import Input from '../../components/Input';
 import Card from '../../components/Card';
 import { colors } from '../../styles/colors';
 import { getApiUrl } from '../../config/api';
+import { useLang } from '../../context/LanguageContext';
+
 
 interface HealthLog {
   id: number;
@@ -91,6 +93,7 @@ const RANGE_HINTS: Record<string, string> = {
 };
 
 const LogHealthScreen: React.FC = () => {
+  const { t } = useLang();
   const [activeTab,     setActiveTab]     = useState<string>('log');
   const [selectedType,  setSelectedType]  = useState<string>('blood_pressure');
   const [value,         setValue]         = useState<string>('');
@@ -101,12 +104,12 @@ const LogHealthScreen: React.FC = () => {
   const [submitting,    setSubmitting]    = useState(false);
   const [userId,        setUserId]        = useState<number | null>(null);
 
-  const healthTypes = [
-    { id: 'blood_pressure', label: 'Blood Pressure', unit: 'mmHg', icon: '💉', placeholder: '120/80' },
-    { id: 'blood_sugar',    label: 'Blood Sugar',    unit: 'mg/dL', icon: '🩸', placeholder: '100'   },
-    { id: 'weight',         label: 'Weight',         unit: 'kg',    icon: '⚖️', placeholder: '70'    },
-    { id: 'temperature',    label: 'Temperature',    unit: '°F',    icon: '🌡️', placeholder: '98.6'  },
-    { id: 'heart_rate',     label: 'Heart Rate',     unit: 'bpm',   icon: '❤️', placeholder: '72'    },
+ const healthTypes = [
+    { id: 'blood_pressure', label: t('bloodPressure'), unit: 'mmHg', icon: '💉', placeholder: '120/80' },
+    { id: 'blood_sugar',    label: t('bloodSugar'),    unit: 'mg/dL', icon: '🩸', placeholder: '100'   },
+    { id: 'weight',         label: t('weight'),         unit: 'kg',    icon: '⚖️', placeholder: '70'    },
+    { id: 'temperature',    label: t('temperature'),    unit: '°F',    icon: '🌡️', placeholder: '98.6'  },
+    { id: 'heart_rate',     label: t('heartRate'),      unit: 'bpm',   icon: '❤️', placeholder: '72'    },
   ];
 
   useEffect(() => { loadUser(); }, []);

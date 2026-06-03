@@ -112,6 +112,8 @@ const DoctorDashboard = ({ route, navigation }: any) => {
     });
   };
 
+  // Calculate total active risks across all patients
+  const totalActiveRisks = patients.reduce((sum, p) => sum + (p.active_risks || 0), 0);
   const priorityPatients = patients.filter(isPriority);
   const stablePatients   = patients.filter(p => !isPriority(p));
   const needsAlert       = patients.filter(p => p.unread_alerts > 0 || p.critical_flags > 0 || p.latest_risk?.risk_level === 'critical' || p.latest_risk?.risk_level === 'high').length;
@@ -120,7 +122,7 @@ const DoctorDashboard = ({ route, navigation }: any) => {
     return (
       <SafeAreaView style={S.screen}>
         <View style={S.loadBox}>
-          <ActivityIndicator size="large" color="#3498db" />
+          <ActivityIndicator size="large" color="#2c7da0" />
           <Text style={{ color: '#95a5a6', marginTop: 12 }}>Loading dashboard…</Text>
         </View>
       </SafeAreaView>
@@ -129,75 +131,81 @@ const DoctorDashboard = ({ route, navigation }: any) => {
 
   return (
     <SafeAreaView style={S.screen}>
-      {/* Page title */}
-      <View style={S.titleBar}>
-        <Text style={S.titleTxt}>Doctor Dashboard</Text>
-        <TouchableOpacity style={S.logoutChip} onPress={handleLogout}>
-          <Text style={S.logoutTxt}>Logout</Text>
-        </TouchableOpacity>
+      {/* Header with logout button */}
+      <View style={S.header}>
+        <View>
+          <Text style={S.greeting}>Doctor Dashboard</Text>
+          <Text style={S.name}>Dr. {lastName}</Text>
+        </View>
+        <View style={S.headerRight}>
+          <TouchableOpacity style={S.logoutBtn} onPress={handleLogout}>
+            <Text style={S.logoutBtnText}>Logout</Text>
+          </TouchableOpacity>
+        </View>
       </View>
 
       <ScrollView
         showsVerticalScrollIndicator={false}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#3498db" />}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#2c7da0" />}
       >
-        {/* Header card */}
-        <View style={S.headerCard}>
-          <View>
-            <Text style={S.welcomeTxt}>Welcome Back</Text>
-            <Text style={S.drNameTxt}>Dr. {lastName}</Text>
+        {/* Stats Bar - Shows Active Risks instead of Alerts */}
+        <View style={S.statsBar}>
+          <View style={S.statItem}>
+            <Text style={S.statNumber}>{patients.length}</Text>
+            <Text style={S.statLabel}>Patients</Text>
           </View>
-          {needsAlert > 0 && (
-            <View style={S.liveChip}>
-              <View style={S.liveDot} />
-              <Text style={S.liveTxt}></Text>
-            </View>
-          )}
-        </View>
-
-        {/* Stats */}
-        <View style={S.statsRow}>
-          <View style={S.statCard}>
-            <Text style={S.statIcon}>👥</Text>
-            <Text style={S.statNum}>{patients.length}</Text>
-            <Text style={S.statLbl}>Patients</Text>
-            <Text style={S.statSub}>Active monitoring</Text>
+          <View style={S.statDivider} />
+          <View style={S.statItem}>
+            <Text style={[S.statNumber, totalActiveRisks > 0 ? { color: '#e17055' } : { color: '#00b894' }]}>
+              {totalActiveRisks}
+            </Text>
+            <Text style={S.statLabel}>Active Risks</Text>
           </View>
-          <View style={[S.statCard, needsAlert > 0 && S.statCardWarn]}>
-            <Text style={S.statIcon}>{needsAlert > 0 ? '⚠️' : '✅'}</Text>
-            <Text style={[S.statNum, needsAlert > 0 && { color: '#e17055' }]}>{needsAlert}</Text>
-            <Text style={S.statLbl}>Need Attention</Text>
-            <Text style={S.statSub}>{needsAlert > 0 ? 'Require review' : 'All stable'}</Text>
+          <View style={S.statDivider} />
+          <View style={S.statItem}>
+            <Text style={[S.statNumber, needsAlert > 0 ? { color: '#ff7675' } : {}]}>{needsAlert}</Text>
+            <Text style={S.statLabel}>Need Attention</Text>
           </View>
         </View>
 
-        {/* Priority Patients */}
+        {/* Priority Patients Section */}
         {priorityPatients.length > 0 && (
           <View style={S.section}>
-            <View style={S.sectionRow}>
-              <View style={S.redDot} />
-              <Text style={S.sectionTitle}>Priority Patients</Text>
-            </View>
+            <Text style={S.sectionTitle}>⚠️ Priority Patients</Text>
             {priorityPatients.map(p => {
               const age       = getAge(p.dob);
               const bp        = getLatestBP(p.latest_vitals || []);
               const lastCheck = getLastCheckTime(p.latest_vitals || []);
               const isCrit    = p.critical_flags > 0 || p.latest_risk?.risk_level === 'critical';
-              const alertClr  = isCrit ? '#c0392b' : '#d68910';
+              // Use active_risks instead of unread_alerts for display
+              const riskCount = p.active_risks || 0;
               const alertBg   = isCrit ? '#fdecea' : '#fef9e7';
+              const alertClr  = isCrit ? '#c0392b' : '#d68910';
+              
               return (
-                <TouchableOpacity key={p.id} style={S.priorityCard} onPress={() => openPatient(p)} activeOpacity={0.82}>
+                <TouchableOpacity 
+                  key={p.id} 
+                  style={[S.priorityCard, isCrit ? S.priorityCardCritical : S.priorityCardMonitor]} 
+                  onPress={() => openPatient(p)} 
+                  activeOpacity={0.82}
+                >
                   <View style={S.priorityTopRow}>
                     <Text style={S.priorityName}>{p.name}{age !== null ? ` (${age})` : ''}</Text>
-                    {p.unread_alerts > 0 && (
-                      <View style={S.unreadBadge}><Text style={S.unreadBadgeTxt}>{p.unread_alerts}</Text></View>
+                    {/* Show active risks badge instead of unread alerts */}
+                    {riskCount > 0 && (
+                      <View style={S.riskBadge}>
+                        <Text style={S.riskBadgeTxt}>{riskCount}</Text>
+                      </View>
                     )}
                   </View>
+                  
+                  {/* CHANGED: Show Active Risks instead of Alerts in the pill */}
                   <View style={[S.alertPill, { backgroundColor: alertBg }]}>
                     <Text style={[S.alertPillTxt, { color: alertClr }]}>
-                      {isCrit ? '🚨 Critical Alert' : p.unread_alerts > 0 ? `⚠️ ${p.unread_alerts} Alert${p.unread_alerts > 1 ? 's' : ''}` : '⚠️ High Risk'}
+                      {isCrit ? '🚨 Critical Risk' : riskCount > 0 ? `⚠️ ${riskCount} Active Risk${riskCount > 1 ? 's' : ''}` : '⚠️ At Risk'}
                     </Text>
                   </View>
+                  
                   <View style={S.priorityMetaRow}>
                     {bp && <Text style={S.priorityMeta}>BP: {bp} mmHg</Text>}
                     {lastCheck && <Text style={S.priorityTime}>{timeAgo(lastCheck)}</Text>}
@@ -214,13 +222,10 @@ const DoctorDashboard = ({ route, navigation }: any) => {
           </View>
         )}
 
-        {/* Recent Patients (stable) */}
+        {/* Recent Patients Section */}
         {stablePatients.length > 0 && (
           <View style={S.section}>
-            <View style={S.sectionRow}>
-              <Text style={{ fontSize: 14 }}>📋</Text>
-              <Text style={S.sectionTitle}>Recent Patients</Text>
-            </View>
+            <Text style={S.sectionTitle}>📋 Recent Patients</Text>
             <View style={S.recentList}>
               {stablePatients.map((p, idx) => {
                 const age       = getAge(p.dob);
@@ -266,59 +271,238 @@ const DoctorDashboard = ({ route, navigation }: any) => {
 };
 
 const S = StyleSheet.create({
-  screen:   { flex: 1, backgroundColor: '#f0f2f5' },
+  screen:   { flex: 1, backgroundColor: '#f8f9fa' },
   loadBox:  { flex: 1, justifyContent: 'center', alignItems: 'center' },
 
-  titleBar:  { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: '#f0f2f5', paddingHorizontal: 20, paddingTop: 10, paddingBottom: 6 },
-  titleTxt:  { fontSize: 17, fontWeight: '600', color: '#7f8c8d' },
-  logoutChip:{ backgroundColor: '#fdecea', borderRadius: 10, paddingHorizontal: 12, paddingVertical: 5, borderWidth: 1, borderColor: '#f5b7b1' },
-  logoutTxt: { fontSize: 12, fontWeight: '700', color: '#c0392b' },
+  header: { 
+    flexDirection: 'row', 
+    justifyContent: 'space-between', 
+    alignItems: 'center', 
+    padding: 20, 
+    paddingBottom: 15, 
+    backgroundColor: '#fff', 
+    borderBottomWidth: 1, 
+    borderBottomColor: '#e9ecef' 
+  },
+  greeting: { 
+    fontSize: 12, 
+    color: '#6c757d', 
+    textTransform: 'uppercase', 
+    letterSpacing: 0.5 
+  },
+  name: { 
+    fontSize: 22, 
+    fontWeight: 'bold', 
+    color: '#2c7da0', 
+    marginTop: 2 
+  },
+  headerRight: { 
+    flexDirection: 'row', 
+    alignItems: 'center', 
+    gap: 10 
+  },
+  logoutBtn: { 
+    paddingHorizontal: 14, 
+    paddingVertical: 8, 
+    borderRadius: 8, 
+    borderWidth: 1, 
+    borderColor: '#dee2e6',
+    backgroundColor: '#f8f9fa'
+  },
+  logoutBtnText: { 
+    fontSize: 13, 
+    fontWeight: '600', 
+    color: '#495057' 
+  },
 
-  headerCard: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#fff', marginHorizontal: 15, marginBottom: 14, borderRadius: 14, paddingHorizontal: 18, paddingVertical: 16, elevation: 2, shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 6 },
-  welcomeTxt: { fontSize: 12, color: '#95a5a6', marginBottom: 3 },
-  drNameTxt:  { fontSize: 20, fontWeight: '800', color: '#2c3e50' },
-  liveChip:   { flexDirection: 'row', alignItems: 'center', backgroundColor: '#eafaf1', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 20, gap: 5 },
-  liveDot:    { width: 7, height: 7, borderRadius: 3.5, backgroundColor: '#27ae60' },
-  liveTxt:    { fontSize: 11, fontWeight: '700', color: '#27ae60' },
+  statsBar: { 
+    flexDirection: 'row', 
+    backgroundColor: '#fff', 
+    paddingVertical: 14, 
+    paddingHorizontal: 12, 
+    marginBottom: 4, 
+    borderBottomWidth: 1, 
+    borderBottomColor: '#e9ecef' 
+  },
+  statItem: { 
+    flex: 1, 
+    alignItems: 'center' 
+  },
+  statDivider: { 
+    width: 1, 
+    backgroundColor: '#e9ecef' 
+  },
+  statNumber: { 
+    fontSize: 20, 
+    fontWeight: 'bold', 
+    color: '#2c7da0' 
+  },
+  statLabel: { 
+    fontSize: 10, 
+    color: '#6c757d', 
+    marginTop: 2, 
+    textAlign: 'center' 
+  },
 
-  statsRow:    { flexDirection: 'row', paddingHorizontal: 15, gap: 12, marginBottom: 18 },
-  statCard:    { flex: 1, backgroundColor: '#fff', borderRadius: 14, padding: 16, elevation: 2, shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 5, alignItems: 'center' },
-  statCardWarn:{ borderWidth: 1, borderColor: '#fdecea' },
-  statIcon:    { fontSize: 22, marginBottom: 6 },
-  statNum:     { fontSize: 32, fontWeight: '800', color: '#3498db' },
-  statLbl:     { fontSize: 13, fontWeight: '600', color: '#2c3e50', marginTop: 2 },
-  statSub:     { fontSize: 11, color: '#95a5a6', marginTop: 2 },
+  section: { 
+    paddingHorizontal: 16, 
+    marginTop: 16, 
+    marginBottom: 8 
+  },
+  sectionTitle: { 
+    fontSize: 13, 
+    fontWeight: '700', 
+    color: '#6c757d', 
+    marginBottom: 12, 
+    textTransform: 'uppercase', 
+    letterSpacing: 0.5 
+  },
 
-  section:     { paddingHorizontal: 15, marginBottom: 18 },
-  sectionRow:  { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12 },
-  redDot:      { width: 10, height: 10, borderRadius: 5, backgroundColor: '#e74c3c' },
-  sectionTitle:{ fontSize: 15, fontWeight: '700', color: '#2c3e50' },
+  priorityCard: { 
+    backgroundColor: '#fff', 
+    borderRadius: 12, 
+    padding: 16, 
+    marginBottom: 12, 
+    borderWidth: 1,
+    borderColor: '#e9ecef',
+    shadowColor: '#000', 
+    shadowOpacity: 0.04, 
+    shadowRadius: 4,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 2
+  },
+  priorityCardCritical: {
+    borderLeftWidth: 4,
+    borderLeftColor: '#c0392b',
+  },
+  priorityCardMonitor: {
+    borderLeftWidth: 4,
+    borderLeftColor: '#d68910',
+  },
+  priorityTopRow: { 
+    flexDirection: 'row', 
+    justifyContent: 'space-between', 
+    alignItems: 'center', 
+    marginBottom: 8 
+  },
+  priorityName: { 
+    fontSize: 16, 
+    fontWeight: '700', 
+    color: '#212529' 
+  },
+  riskBadge: { 
+    backgroundColor: '#e17055', 
+    borderRadius: 10, 
+    minWidth: 20, 
+    height: 20, 
+    justifyContent: 'center', 
+    alignItems: 'center', 
+    paddingHorizontal: 5 
+  },
+  riskBadgeTxt: { 
+    fontSize: 11, 
+    fontWeight: '700', 
+    color: '#fff' 
+  },
+  alertPill: { 
+    alignSelf: 'flex-start', 
+    paddingHorizontal: 10, 
+    paddingVertical: 4, 
+    borderRadius: 6, 
+    marginBottom: 8 
+  },
+  alertPillTxt: { 
+    fontSize: 12, 
+    fontWeight: '700' 
+  },
+  priorityMetaRow: { 
+    flexDirection: 'row', 
+    justifyContent: 'space-between', 
+    alignItems: 'center' 
+  },
+  priorityMeta: { 
+    fontSize: 12, 
+    color: '#6c757d' 
+  },
+  priorityTime: { 
+    fontSize: 11, 
+    color: '#adb5bd' 
+  },
+  moodLine: { 
+    fontSize: 11, 
+    color: '#6c757d', 
+    marginTop: 6, 
+    fontStyle: 'italic' 
+  },
 
-  priorityCard: { backgroundColor: '#fff', borderRadius: 12, padding: 16, borderLeftWidth: 4, borderLeftColor: '#e74c3c', marginBottom: 10, elevation: 2, shadowColor: '#000', shadowOpacity: 0.06, shadowRadius: 5 },
-  priorityTopRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
-  priorityName:   { fontSize: 16, fontWeight: '700', color: '#2c3e50' },
-  unreadBadge:    { backgroundColor: '#e74c3c', borderRadius: 10, minWidth: 20, height: 20, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 5 },
-  unreadBadgeTxt: { fontSize: 11, fontWeight: '700', color: '#fff' },
-  alertPill:      { alignSelf: 'flex-start', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 6, marginBottom: 8 },
-  alertPillTxt:   { fontSize: 12, fontWeight: '700' },
-  priorityMetaRow:{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  priorityMeta:   { fontSize: 12, color: '#7f8c8d' },
-  priorityTime:   { fontSize: 11, color: '#95a5a6' },
-  moodLine:       { fontSize: 11, color: '#95a5a6', marginTop: 6, fontStyle: 'italic' },
+  recentList: { 
+    backgroundColor: '#fff', 
+    borderRadius: 12, 
+    overflow: 'hidden', 
+    borderWidth: 1,
+    borderColor: '#e9ecef'
+  },
+  recentRow: { 
+    flexDirection: 'row', 
+    alignItems: 'center', 
+    paddingHorizontal: 16, 
+    paddingVertical: 14, 
+    gap: 12 
+  },
+  recentRowBorder: { 
+    borderBottomWidth: 1, 
+    borderBottomColor: '#f1f3f5' 
+  },
+  recentAv: { 
+    width: 40, 
+    height: 40, 
+    borderRadius: 20, 
+    backgroundColor: '#e3f2fd', 
+    justifyContent: 'center', 
+    alignItems: 'center' 
+  },
+  recentAvTxt: { 
+    fontSize: 16, 
+    fontWeight: '800', 
+    color: '#2c7da0' 
+  },
+  recentName: { 
+    fontSize: 14, 
+    fontWeight: '600', 
+    color: '#212529' 
+  },
+  recentTime: { 
+    fontSize: 11, 
+    color: '#6c757d', 
+    marginTop: 2 
+  },
+  statusBadge: { 
+    paddingHorizontal: 10, 
+    paddingVertical: 4, 
+    borderRadius: 20 
+  },
+  statusTxt: { 
+    fontSize: 11, 
+    fontWeight: '700' 
+  },
 
-  recentList:      { backgroundColor: '#fff', borderRadius: 14, overflow: 'hidden', elevation: 2, shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 5 },
-  recentRow:       { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 14, gap: 12 },
-  recentRowBorder: { borderBottomWidth: 1, borderBottomColor: '#f4f6f8' },
-  recentAv:        { width: 40, height: 40, borderRadius: 20, backgroundColor: '#d6eaf8', justifyContent: 'center', alignItems: 'center' },
-  recentAvTxt:     { fontSize: 16, fontWeight: '800', color: '#2980b9' },
-  recentName:      { fontSize: 14, fontWeight: '600', color: '#2c3e50' },
-  recentTime:      { fontSize: 11, color: '#95a5a6', marginTop: 2 },
-  statusBadge:     { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 20 },
-  statusTxt:       { fontSize: 11, fontWeight: '700' },
-
-  emptyState:{ alignItems: 'center', paddingVertical: 60, paddingHorizontal: 30 },
-  emptyTitle:{ fontSize: 17, fontWeight: '700', color: '#2c3e50', marginBottom: 8 },
-  emptySub:  { fontSize: 13, color: '#95a5a6', textAlign: 'center', lineHeight: 20 },
+  emptyState: { 
+    alignItems: 'center', 
+    paddingVertical: 60, 
+    paddingHorizontal: 30 
+  },
+  emptyTitle: { 
+    fontSize: 17, 
+    fontWeight: '700', 
+    color: '#212529', 
+    marginBottom: 8 
+  },
+  emptySub: { 
+    fontSize: 13, 
+    color: '#6c757d', 
+    textAlign: 'center', 
+    lineHeight: 20 
+  },
 });
 
 export default DoctorDashboard;

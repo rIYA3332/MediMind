@@ -22,7 +22,7 @@ interface Alert {
 }
 
 // ── Added 'Prescription' filter for doctor-prescribed meds ──────────────────
-const FILTERS = ['All', 'Vital', 'Mood', 'Health Log', 'Medication', 'Prescription', 'Overdue'];
+const FILTERS = ['All', 'Vital', 'Mood', 'Health Log', 'Prescription', 'Overdue'];
 
 const AlertsScreen: React.FC = ({ navigation }: any) => {
   const [caregiverId, setCaregiverId] = useState<number | null>(null);
@@ -231,7 +231,7 @@ const AlertsScreen: React.FC = ({ navigation }: any) => {
       {!showHistory && prescriptionUnread > 0 && (
         <View style={styles.prescriptionBanner}>
           <Text style={styles.prescriptionBannerText}>
-            💊 {prescriptionUnread} new prescription{prescriptionUnread !== 1 ? 's' : ''} from doctor — please add to schedule
+            💊 {prescriptionUnread} new prescription{prescriptionUnread !== 1 ? 's' : ''} from doctor - please add to schedule
           </Text>
           <TouchableOpacity onPress={() => setActiveFilter('Prescription')}>
             <Text style={styles.prescriptionBannerAction}>View →</Text>

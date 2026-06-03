@@ -5,8 +5,10 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getApiUrl } from '../../config/api';
 import Card from '../../components/Card';
 import { colors } from '../../styles/colors';
+import { useLang } from '../../context/LanguageContext';
 
 const ElderlyDashboard = ({ route, navigation }: any) => {
+  const { t } = useLang();
   const { user } = route.params;
   const [requests, setRequests] = useState([]);
   const [nextMed, setNextMed] = useState<any>(null);
@@ -131,19 +133,17 @@ const ElderlyDashboard = ({ route, navigation }: any) => {
     return `at ${time}`;
   };
 
-  const getGreeting = () => {
+const getGreeting = () => {
     const hour = new Date().getHours();
-    if (hour < 12) return 'Good Morning';
-    if (hour < 17) return 'Good Afternoon';
-    return 'Good Evening';
+    if (hour < 12) return t('goodMorning');
+    if (hour < 17) return t('goodAfternoon');
+    return t('goodEvening');
   };
 
   return (
     <SafeAreaView style={styles.container}>
-      <ScrollView
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
-      >
-        {/* Header */}
+      <ScrollView refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}>
+
         <View style={styles.header}>
           <View>
             <Text style={styles.greeting}>{getGreeting()}</Text>
@@ -154,98 +154,88 @@ const ElderlyDashboard = ({ route, navigation }: any) => {
           </TouchableOpacity>
         </View>
 
-        {/* Next Medication Card */}
         {nextMed && (
           <Card style={styles.nextMedCard}>
             <View style={styles.medHeader}>
-              <Text style={styles.medLabel}>⏰ Next Medication</Text>
+              <Text style={styles.medLabel}>⏰ {t('nextMedication')}</Text>
             </View>
             <Text style={styles.medName}>{nextMed.name} {nextMed.dosage}</Text>
             <Text style={styles.medTime}>
-              Due {calculateTimeUntil(nextMed.time)} • {nextMed.timing?.replace('_', ' ')}
+              {t('due')} {calculateTimeUntil(nextMed.time)} • {nextMed.timing?.replace('_', ' ')}
             </Text>
           </Card>
         )}
 
-        {/* Quick Actions */}
-        <Text style={styles.sectionTitle}>Quick Actions</Text>
+        <Text style={styles.sectionTitle}>{t('quickActions')}</Text>
         <View style={styles.quickActions}>
           <TouchableOpacity style={styles.actionCard} onPress={() => navigation.navigate('Health')}>
             <View style={styles.actionIconContainer}><Text style={styles.actionIcon}>📊</Text></View>
-            <Text style={styles.actionText}>Log Health Data</Text>
+            <Text style={styles.actionText}>{t('logHealthData')}</Text>
           </TouchableOpacity>
           <TouchableOpacity style={styles.actionCard} onPress={() => navigation.navigate('MoodCheck')}>
             <View style={styles.actionIconContainer}><Text style={styles.actionIcon}>😊</Text></View>
-            <Text style={styles.actionText}>Mood Check-in</Text>
+            <Text style={styles.actionText}>{t('moodCheckin')}</Text>
           </TouchableOpacity>
           <TouchableOpacity style={styles.actionCard} onPress={() => navigation.navigate('Meds')}>
             <View style={styles.actionIconContainer}><Text style={styles.actionIcon}>💊</Text></View>
-            <Text style={styles.actionText}>View Medications</Text>
+            <Text style={styles.actionText}>{t('viewMedications')}</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={styles.actionCard} onPress={() => Alert.alert('Recommendations', 'Feature coming soon!')}>
+          <TouchableOpacity style={styles.actionCard} onPress={() => navigation.navigate('Recommendations')}>
             <View style={styles.actionIconContainer}><Text style={styles.actionIcon}>💡</Text></View>
-            <Text style={styles.actionText}>Recommendations</Text>
+            <Text style={styles.actionText}>{t('recommendations')}</Text>
           </TouchableOpacity>
         </View>
 
-        {/* Today's Summary */}
-        <Text style={styles.sectionTitle}>Today's Summary</Text>
+        <Text style={styles.sectionTitle}>{t('todaySummary')}</Text>
         <Card>
           <View style={styles.summaryRow}>
             <Text style={styles.summaryIcon}>💊</Text>
             <View style={styles.summaryInfo}>
-              <Text style={styles.summaryLabel}>Medications</Text>
+              <Text style={styles.summaryLabel}>{t('medications')}</Text>
               <Text style={styles.summaryValue}>
-                {summary.medications.taken}/{summary.medications.total} taken
+                {summary.medications.taken}/{summary.medications.total} {t('taken')}
               </Text>
             </View>
-            <Text style={[
-              styles.summaryStatus,
+            <Text style={[styles.summaryStatus,
               summary.medications.taken === summary.medications.total && summary.medications.total > 0
-                ? styles.statusGreen : styles.statusOrange
-            ]}>
+                ? styles.statusGreen : styles.statusOrange]}>
               {summary.medications.taken === summary.medications.total && summary.medications.total > 0
-                ? 'On Track' : 'Pending'}
+                ? t('onTrack') : t('pending')}
             </Text>
           </View>
 
           <View style={styles.summaryRow}>
             <Text style={styles.summaryIcon}>📊</Text>
             <View style={styles.summaryInfo}>
-              <Text style={styles.summaryLabel}>Health Logs</Text>
+              <Text style={styles.summaryLabel}>{t('healthLogs')}</Text>
               <Text style={styles.summaryValue}>
-                {summary.healthLogs} {summary.healthLogs === 1 ? 'entry' : 'entries'} today
+                {summary.healthLogs} {summary.healthLogs === 1 ? t('entry') : t('entries')} {t('today')}
               </Text>
             </View>
-            <Text style={[
-              styles.summaryStatus,
-              summary.healthLogs > 0 ? styles.statusGreen : styles.statusGray
-            ]}>
-              {summary.healthLogs > 0 ? 'Active' : 'None'}
+            <Text style={[styles.summaryStatus,
+              summary.healthLogs > 0 ? styles.statusGreen : styles.statusGray]}>
+              {summary.healthLogs > 0 ? t('active') : t('none')}
             </Text>
           </View>
 
           <View style={[styles.summaryRow, { borderBottomWidth: 0 }]}>
             <Text style={styles.summaryIcon}>😊</Text>
             <View style={styles.summaryInfo}>
-              <Text style={styles.summaryLabel}>Mood</Text>
+              <Text style={styles.summaryLabel}>{t('mood')}</Text>
               <Text style={styles.summaryValue}>
-                {summary.moodRecorded ? 'Recorded today' : 'Not recorded'}
+                {summary.moodRecorded ? t('recordedToday') : t('notRecorded')}
               </Text>
             </View>
-            <Text style={[
-              styles.summaryStatus,
-              summary.moodRecorded ? styles.statusGreen : styles.statusOrange
-            ]}>
-              {summary.moodRecorded ? 'Done' : 'Monitor'}
+            <Text style={[styles.summaryStatus,
+              summary.moodRecorded ? styles.statusGreen : styles.statusOrange]}>
+              {summary.moodRecorded ? t('done') : t('monitor')}
             </Text>
           </View>
         </Card>
 
-        {/* Connection Requests */}
         {requests.length > 0 && (
           <>
-            <Text style={styles.sectionTitle}>Pending Requests</Text>
+            <Text style={styles.sectionTitle}>{t('pendingRequests')}</Text>
             {requests.map((req: any) => (
               <Card key={req.connectionId} style={styles.requestCard}>
                 <View style={styles.reqHeader}>
@@ -253,14 +243,14 @@ const ElderlyDashboard = ({ route, navigation }: any) => {
                   <Text style={styles.reqRole}>{req.role.toUpperCase()}</Text>
                 </View>
                 <Text style={styles.reqRelation}>
-                  {req.relationship || 'Family member'} wants to monitor your health
+                  {req.relationship || 'Family member'} {t('wantsToMonitor')}
                 </Text>
                 <View style={styles.btnRow}>
                   <TouchableOpacity style={styles.approveBtn} onPress={() => handleAction(req.connectionId, 'approved')}>
-                    <Text style={styles.approveBtnText}>✓ Approve</Text>
+                    <Text style={styles.approveBtnText}>{t('approve')}</Text>
                   </TouchableOpacity>
                   <TouchableOpacity style={styles.rejectBtn} onPress={() => handleAction(req.connectionId, 'rejected')}>
-                    <Text style={styles.rejectBtnText}>✕ Reject</Text>
+                    <Text style={styles.rejectBtnText}>{t('reject')}</Text>
                   </TouchableOpacity>
                 </View>
               </Card>
@@ -268,11 +258,10 @@ const ElderlyDashboard = ({ route, navigation }: any) => {
           </>
         )}
 
-        {/* Registration Code */}
         <Card style={styles.codeCard}>
-          <Text style={styles.codeLabel}>Your Connection Code</Text>
+          <Text style={styles.codeLabel}>{t('connectionCode')}</Text>
           <Text style={styles.codeValue}>{user.code}</Text>
-          <Text style={styles.codeHint}>Share with family or doctor to get started</Text>
+          <Text style={styles.codeHint}>{t('shareCode')}</Text>
         </Card>
       </ScrollView>
     </SafeAreaView>

@@ -14,6 +14,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getApiUrl } from '../../config/api';
 import Card from '../../components/Card';
 import { colors } from '../../styles/colors';
+import { useLang } from '../../context/LanguageContext'
 
 interface Medication {
   id: number;
@@ -41,6 +42,7 @@ function parseTime(raw: string | null | undefined): { hours: number; minutes: nu
 }
 
 const MedicationScreen: React.FC = () => {
+  const { t } = useLang();
   const [medications, setMedications] = useState<Medication[]>([]);
   const [loading,     setLoading]     = useState(false);
   const [refreshing,  setRefreshing]  = useState(false);
@@ -120,12 +122,13 @@ const MedicationScreen: React.FC = () => {
     return { label: 'Pending', color: '#e0e0e0', textColor: '#666' };
   };
 
+// replace fmtTime's fallback
   const fmtTime = (raw: string | null | undefined) => {
-    const parsed = parseTime(raw);
-    if (!parsed) return 'No time set';
+  const parsed = parseTime(raw);
+  if (!parsed) return '';
     const { hours, minutes } = parsed;
-    const period  = hours >= 12 ? 'PM' : 'AM';
-    const h12     = hours % 12 || 12;
+    const period = hours >= 12 ? 'PM' : 'AM';
+    const h12    = hours % 12 || 12;
     return `${h12}:${String(minutes).padStart(2, '0')} ${period}`;
   };
 
@@ -139,7 +142,7 @@ const MedicationScreen: React.FC = () => {
   return (
     <SafeAreaView style={styles.container}>
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>My Medications</Text>
+        <Text style={styles.headerTitle}>{t('myMedications')}</Text>
       </View>
 
       <ScrollView
@@ -150,14 +153,14 @@ const MedicationScreen: React.FC = () => {
           <ActivityIndicator size="large" color={colors.primary} />
         ) : medications.length === 0 ? (
           <Card>
-            <Text style={styles.emptyText}>No medications scheduled yet.</Text>
+            <Text style={styles.emptyText}>{t('noMedications')}</Text>
           </Card>
         ) : (
           <>
             {/* ── Due Now ───────────────────────────────────────── */}
             {dueNow.length > 0 && (
               <>
-                <Text style={styles.sectionTitle}>⏰ Due Now</Text>
+                <Text style={styles.sectionTitle}>{t('dueNow')}</Text>
                 {dueNow.map(med => (
                   <Card key={med.id} style={styles.dueCard}>
                     <Text style={styles.medName}>{med.name}</Text>
@@ -166,10 +169,10 @@ const MedicationScreen: React.FC = () => {
                     </Text>
                     <View style={styles.actionButtons}>
                       <TouchableOpacity style={styles.takenButton} onPress={() => updateStatus(med, 'taken')}>
-                        <Text style={styles.takenButtonText}>✅ Taken</Text>
+                        <Text style={styles.takenButtonText}>{t('takenBtn')}</Text>
                       </TouchableOpacity>
                       <TouchableOpacity style={styles.notTakenButton} onPress={() => updateStatus(med, 'skipped')}>
-                        <Text style={styles.notTakenButtonText}>❌ Not Taken</Text>
+                        <Text style={styles.notTakenButtonText}>{t('notTakenBtn')}</Text>
                       </TouchableOpacity>
                     </View>
                   </Card>
@@ -180,13 +183,14 @@ const MedicationScreen: React.FC = () => {
             {/* ── Upcoming ──────────────────────────────────────── */}
             {upcoming.length > 0 && (
               <>
-                <Text style={styles.sectionTitle}>🔜 Upcoming</Text>
+                <Text style={styles.sectionTitle}>{t('upcoming')}</Text>
                 {upcoming.map(med => (
                   <Card key={med.id}>
                     <Text style={styles.medName}>{med.name}</Text>
                     <Text style={styles.medDetails}>
-                      {med.dosage || '—'} • {fmtTime(med.time)}
-                    </Text>
+  {med.dosage || '—'}{fmtTime(med.time) ? ` • ${fmtTime(med.time)}` : ''}
+</Text>
+                    
                   </Card>
                 ))}
               </>
@@ -195,7 +199,7 @@ const MedicationScreen: React.FC = () => {
             {/* ── Today (all others) ────────────────────────────── */}
             {todaySchedule.length > 0 && (
               <>
-                <Text style={styles.sectionTitle}>📅 Today</Text>
+                <Text style={styles.sectionTitle}>{t('todaySchedule')}</Text>
                 {todaySchedule.map(med => {
                   const status = getDueStatus(med.time, med.taken_today);
                   const isDrPrescribed = !med.time && med.taken_today === 0;
@@ -210,11 +214,7 @@ const MedicationScreen: React.FC = () => {
                           {status.label}
                         </Text>
                       </View>
-                      {isDrPrescribed && (
-                        <Text style={styles.doctorNote}>
-                          💊 Prescribed by doctor — awaiting schedule from caregiver
-                        </Text>
-                      )}
+                      
                     </Card>
                   );
                 })}

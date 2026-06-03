@@ -77,6 +77,18 @@ const CATEGORY_COLORS: Record<string, string> = {
   comorbidity:    '#2d3436',
 };
 
+// Category filter tabs for the modal
+const CATEGORY_FILTER_TABS = [
+  { key: 'all',            label: 'All'          },
+  { key: 'metabolic',      label: 'Metabolic'    },
+  { key: 'cardiovascular', label: 'Cardiac'      },
+  { key: 'neurological',   label: 'Neurological' },
+  { key: 'respiratory',    label: 'Respiratory'  },
+  { key: 'renal',          label: 'Renal'        },
+  { key: 'musculoskeletal',label: 'Joints'       },
+  { key: 'mental',         label: 'Mental'       },
+];
+
 const VITAL_COLORS: Record<string, string> = {
   blood_pressure: '#3498db', blood_sugar: '#9b59b6',
   heart_rate: '#e74c3c', temperature: '#e67e22', weight: '#27ae60',
@@ -126,6 +138,7 @@ const PatientDetailScreen = ({ route, navigation }: any) => {
   const [condNotes,      setCondNotes]      = useState('');
   const [selectedPreset, setSelectedPreset] = useState<string | null>(null);
   const [savingCond,     setSavingCond]     = useState(false);
+  const [condCategory,   setCondCategory]   = useState<string>('all'); // ← NEW
 
   // Medication form
   const [medName,   setMedName]   = useState('');
@@ -186,6 +199,7 @@ const PatientDetailScreen = ({ route, navigation }: any) => {
     setCondDiagDate('');
     setCondNotes('');
     setSelectedPreset(null);
+    setCondCategory('all');
     setCondModalOpen(true);
   };
 
@@ -308,11 +322,15 @@ const PatientDetailScreen = ({ route, navigation }: any) => {
     finally { setSendingChat(false); }
   };
 
-  // ── Filter conditions for search ─────────────────────────────────────────
-  const filteredPresets = COMMON_CONDITIONS.filter(c =>
-    condSearch.trim() === '' ||
-    c.label.toLowerCase().includes(condSearch.toLowerCase())
-  );
+  // ── Filter conditions for search + category ───────────────────────────────
+  const filteredPresets = COMMON_CONDITIONS.filter(c => {
+    const matchesSearch =
+      condSearch.trim() === '' ||
+      c.label.toLowerCase().includes(condSearch.toLowerCase());
+    const matchesCategory =
+      condCategory === 'all' || c.category === condCategory;
+    return matchesSearch && matchesCategory;
+  });
 
   // ── Overview ──────────────────────────────────────────────────────────────
   const renderOverview = () => {
@@ -329,7 +347,6 @@ const PatientDetailScreen = ({ route, navigation }: any) => {
             {age !== null && <View style={D.infoCol}><Text style={D.infoLbl}>Age</Text><Text style={D.infoVal}>{age} yrs</Text></View>}
             {p?.gender    && <View style={D.infoCol}><Text style={D.infoLbl}>Gender</Text><Text style={D.infoVal}>{p.gender}</Text></View>}
           </View>
-          {/* Conditions summary */}
           {conds.length > 0 ? (
             <View style={D.condSummaryBox}>
               <Text style={D.condSummaryTitle}>🏥 Medical Conditions</Text>
@@ -423,7 +440,6 @@ const PatientDetailScreen = ({ route, navigation }: any) => {
           ))
         )}
 
-        {/* VIEW FULL HISTORY — navigates to ReportScreen */}
         <TouchableOpacity
           style={D.historyBtn}
           onPress={() => navigation.navigate('PatientReport', {
@@ -442,7 +458,6 @@ const PatientDetailScreen = ({ route, navigation }: any) => {
 
     return (
       <>
-        {/* Header */}
         <View style={D.condTabHeader}>
           <View>
             <Text style={D.condTabTitle}>Medical Conditions</Text>
@@ -457,7 +472,6 @@ const PatientDetailScreen = ({ route, navigation }: any) => {
           </TouchableOpacity>
         </View>
 
-        {/* Important note */}
         <View style={D.condInfoBanner}>
           <Text style={D.condInfoIcon}>💡</Text>
           <Text style={D.condInfoTxt}>
@@ -465,7 +479,6 @@ const PatientDetailScreen = ({ route, navigation }: any) => {
           </Text>
         </View>
 
-        {/* Empty state */}
         {conds.length === 0 && (
           <TouchableOpacity style={D.condEmptyBox} onPress={openAddCondition}>
             <Text style={{ fontSize: 48, marginBottom: 12 }}>🏥</Text>
@@ -479,7 +492,6 @@ const PatientDetailScreen = ({ route, navigation }: any) => {
           </TouchableOpacity>
         )}
 
-        {/* Condition cards */}
         {conds.map(cond => {
           const preset = COMMON_CONDITIONS.find(
             p => p.label.toLowerCase() === cond.condition.toLowerCase()
@@ -518,10 +530,13 @@ const PatientDetailScreen = ({ route, navigation }: any) => {
           );
         })}
 
-        {/* Add more button at bottom */}
+        {/* ── Redesigned "Add Another Condition" button ── */}
         {conds.length > 0 && (
-          <TouchableOpacity style={D.addMoreCondBtn} onPress={openAddCondition}>
-            <Text style={D.addMoreCondBtnTxt}>+ Add Another Condition</Text>
+          <TouchableOpacity style={D.addMoreCondBtn} onPress={openAddCondition} activeOpacity={0.8}>
+            <View style={D.addMoreCondIcon}>
+              <Text style={{ fontSize: 18, color: '#2d7dd2' }}>+</Text>
+            </View>
+            <Text style={D.addMoreCondBtnTxt}>Add Another Condition</Text>
           </TouchableOpacity>
         )}
 
@@ -727,7 +742,6 @@ const PatientDetailScreen = ({ route, navigation }: any) => {
 
   return (
     <SafeAreaView style={D.screen}>
-      {/* Page title */}
       <View style={D.pageTitle}>
         <TouchableOpacity onPress={() => navigation.goBack()} style={{ marginRight: 10 }}>
           <Text style={{ fontSize: 22, color: '#3498db' }}>←</Text>
@@ -735,7 +749,6 @@ const PatientDetailScreen = ({ route, navigation }: any) => {
         <Text style={D.pageTitleTxt}>Patient Details</Text>
       </View>
 
-      {/* Patient name row */}
       <View style={D.patientNameRow}>
         <Text style={D.patientNameTxt}>{p?.name || elderName}</Text>
         <TouchableOpacity style={D.callBtn}
@@ -744,7 +757,6 @@ const PatientDetailScreen = ({ route, navigation }: any) => {
         </TouchableOpacity>
       </View>
 
-      {/* Tab bar */}
       <ScrollView horizontal showsHorizontalScrollIndicator={false}
         style={D.tabBar}
         contentContainerStyle={{ paddingHorizontal: 12, paddingVertical: 8, gap: 8 }}>
@@ -755,7 +767,6 @@ const PatientDetailScreen = ({ route, navigation }: any) => {
           <Text style={[D.tabTxt, tab === 'overview' && D.tabTxtActive]}>Overview</Text>
         </TouchableOpacity>
 
-        {/* CONDITIONS tab — highlighted if no conditions yet */}
         <TouchableOpacity
           style={[
             D.tabBtn,
@@ -772,7 +783,6 @@ const PatientDetailScreen = ({ route, navigation }: any) => {
           </Text>
         </TouchableOpacity>
 
-        {/* Reports — navigates to full ReportScreen */}
         <TouchableOpacity
           style={D.tabBtn}
           onPress={() => navigation.navigate('PatientReport', {
@@ -811,7 +821,6 @@ const PatientDetailScreen = ({ route, navigation }: any) => {
         </TouchableOpacity>
       </ScrollView>
 
-      {/* Content */}
       {tab === 'chat' ? (
         <View style={{ flex: 1, paddingHorizontal: 15, paddingTop: 8 }}>
           {renderChat()}
@@ -833,135 +842,207 @@ const PatientDetailScreen = ({ route, navigation }: any) => {
         </ScrollView>
       )}
 
-      {/* ── Add Condition Modal ─────────────────────────────────────────────── */}
-      <Modal visible={condModalOpen} transparent animationType="slide"
-        onRequestClose={() => setCondModalOpen(false)}>
+      {/* ══════════════════════════════════════════════════════════════════════
+          REDESIGNED Add Condition Modal — matches reference images
+      ══════════════════════════════════════════════════════════════════════ */}
+      <Modal
+        visible={condModalOpen}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setCondModalOpen(false)}
+      >
         <View style={D.modalOverlay}>
           <View style={D.condModalBox}>
-            {/* Modal header */}
+
+            {/* Header */}
             <View style={D.condModalHeader}>
-              <Text style={D.condModalTitle}>Add Medical Condition</Text>
-              <TouchableOpacity onPress={() => setCondModalOpen(false)}>
-                <Text style={{ fontSize: 22, color: '#7f8c8d' }}>✕</Text>
+              <View style={{ flex: 1, marginRight: 12 }}>
+                <Text style={D.condModalTitle}>Add medical condition</Text>
+                <Text style={D.condModalSubtitle}>Select a condition or enter a custom one</Text>
+              </View>
+              <TouchableOpacity style={D.modalCloseBtn} onPress={() => setCondModalOpen(false)}>
+                <Text style={D.modalCloseTxt}>✕</Text>
               </TouchableOpacity>
             </View>
 
+            {/* Search bar */}
+            <View style={D.condSearchBox}>
+              <Text style={D.condSearchIcon}>🔍</Text>
+              <TextInput
+                style={D.condSearchInput}
+                value={condSearch}
+                onChangeText={v => { setCondSearch(v); setSelectedPreset(null); }}
+                placeholder="Search conditions..."
+                placeholderTextColor="#adb5bd"
+              />
+              {condSearch.length > 0 && (
+                <TouchableOpacity onPress={() => setCondSearch('')}>
+                  <Text style={{ color: '#adb5bd', fontSize: 16, paddingLeft: 6 }}>✕</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+
+            {/* Category filter pills */}
             <ScrollView
-              showsVerticalScrollIndicator={false}
-              keyboardShouldPersistTaps="handled">
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              style={D.categoryPillsScroll}
+              contentContainerStyle={D.categoryPillsContent}
+            >
+              {CATEGORY_FILTER_TABS.map(cat => {
+                const active = condCategory === cat.key;
+                return (
+                  <TouchableOpacity
+                    key={cat.key}
+                    style={[D.categoryPill, active && D.categoryPillActive]}
+                    onPress={() => setCondCategory(cat.key)}
+                  >
+                    <Text style={[D.categoryPillTxt, active && D.categoryPillTxtActive]}>
+                      {cat.label}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
 
-              {/* Search */}
-              <View style={D.condSearchBox}>
-                <Text style={D.condSearchIcon}>🔍</Text>
-                <TextInput
-                  style={D.condSearchInput}
-                  value={condSearch}
-                  onChangeText={v => { setCondSearch(v); setSelectedPreset(null); }}
-                  placeholder="Search conditions..."
-                  placeholderTextColor="#bbb"
-                />
-              </View>
+            {/* Scrollable content — takes all remaining space */}
+            <ScrollView
+              showsVerticalScrollIndicator={true}
+              keyboardShouldPersistTaps="handled"
+              style={{ flex: 1 }}
+              contentContainerStyle={{ paddingBottom: 8 }}
+            >
+              {/* Common conditions section label */}
+              {filteredPresets.length > 0 && (
+                <Text style={D.condSectionLabel}>COMMON CONDITIONS</Text>
+              )}
 
-              {/* Preset list */}
-              <Text style={D.condSectionLabel}>Common Conditions</Text>
-              <View style={D.condPresetGrid}>
-                {filteredPresets.map(c => {
-                  const color   = CATEGORY_COLORS[c.category] || '#636e72';
-                  const isSelected = selectedPreset === c.label;
-                  return (
-                    <TouchableOpacity
-                      key={c.label}
-                      style={[
-                        D.condPresetItem,
-                        { borderColor: isSelected ? color : '#e0e0e0' },
-                        isSelected && { backgroundColor: color + '15' },
-                      ]}
-                      onPress={() => {
-                        setSelectedPreset(isSelected ? null : c.label);
-                        setCondCustom('');
-                      }}>
-                      <Text style={D.condPresetIcon}>{c.icon}</Text>
-                      <Text style={[
-                        D.condPresetTxt,
-                        isSelected && { color, fontWeight: '700' },
-                      ]}>
+              {/* Condition cards */}
+              {filteredPresets.map((c) => {
+                const color      = CATEGORY_COLORS[c.category] || '#636e72';
+                const isSelected = selectedPreset === c.label;
+                return (
+                  <TouchableOpacity
+                    key={c.label}
+                    style={[D.condListItem, isSelected && D.condListItemSelected]}
+                    onPress={() => {
+                      setSelectedPreset(isSelected ? null : c.label);
+                      setCondCustom('');
+                    }}
+                    activeOpacity={0.7}
+                  >
+                    {/* Icon circle */}
+                    <View style={[D.condListIconWrap, { backgroundColor: color + '1a' }]}>
+                      <Text style={{ fontSize: 20 }}>{c.icon}</Text>
+                    </View>
+
+                    {/* Name + category */}
+                    <View style={{ flex: 1, marginLeft: 14 }}>
+                      <Text style={[D.condListItemName, isSelected && { color: '#2563eb' }]}>
                         {c.label}
                       </Text>
-                      {isSelected && (
-                        <Text style={[D.condPresetCheck, { color }]}>✓</Text>
-                      )}
-                    </TouchableOpacity>
-                  );
-                })}
-              </View>
+                      <Text style={[D.condListItemCat, { color: isSelected ? '#2563eb' : color }]}>
+                        {c.category.charAt(0).toUpperCase() + c.category.slice(1)}
+                      </Text>
+                    </View>
 
-              {/* Custom input */}
-              <Text style={D.condSectionLabel}>Or Enter Custom Condition</Text>
-              <TextInput
-                style={[
-                  D.fieldInput,
-                  condCustom.trim() && { borderColor: '#3498db' },
-                ]}
-                value={condCustom}
-                onChangeText={v => { setCondCustom(v); setSelectedPreset(null); }}
-                placeholder="Type condition name..."
-                placeholderTextColor="#bbb"
-              />
+                    {/* Checkmark */}
+                    {isSelected ? (
+                      <View style={[D.condListCheck, { backgroundColor: '#2563eb' }]}>
+                        <Text style={{ color: '#fff', fontSize: 13, fontWeight: '800' }}>✓</Text>
+                      </View>
+                    ) : (
+                      <View style={D.condListCheckEmpty} />
+                    )}
+                  </TouchableOpacity>
+                );
+              })}
 
-              {/* Extra details */}
-              <Text style={D.condSectionLabel}>
-                Additional Details <Text style={{ fontWeight: '400' }}>(optional)</Text>
-              </Text>
-              <TextInput
-                style={D.fieldInput}
-                value={condDiagDate}
-                onChangeText={setCondDiagDate}
-                placeholder="Diagnosis date (e.g. 2022-03)"
-                placeholderTextColor="#bbb"
-              />
-              <TextInput
-                style={[D.fieldInput, { marginTop: 8, height: 70, textAlignVertical: 'top' }]}
-                value={condNotes}
-                onChangeText={setCondNotes}
-                placeholder="Notes (e.g. controlled with medication, severe stage...)"
-                placeholderTextColor="#bbb"
-                multiline
-              />
-
-              {/* Selected preview */}
-              {(selectedPreset || condCustom.trim()) && (
-                <View style={D.condSelectedPreview}>
-                  <Text style={D.condSelectedLabel}>Adding:</Text>
-                  <Text style={D.condSelectedName}>
-                    {selectedPreset || condCustom.trim()}
-                  </Text>
+              {/* No results */}
+              {filteredPresets.length === 0 && condSearch.trim() !== '' && (
+                <View style={D.condNoResults}>
+                  <Text style={{ fontSize: 32, marginBottom: 8 }}>🔍</Text>
+                  <Text style={D.condNoResultsTxt}>No matches for "{condSearch}"</Text>
+                  <Text style={D.condNoResultsSub}>Enter it as a custom condition below</Text>
                 </View>
               )}
 
-              {/* Action buttons */}
-              <View style={D.condModalActions}>
-                <TouchableOpacity
-                  style={D.condCancelBtn}
-                  onPress={() => setCondModalOpen(false)}
-                  disabled={savingCond}>
-                  <Text style={D.condCancelBtnTxt}>Cancel</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[
-                    D.condConfirmBtn,
-                    !(selectedPreset || condCustom.trim()) && { opacity: 0.5 },
-                    savingCond && { opacity: 0.6 },
-                  ]}
-                  onPress={handleSaveCondition}
-                  disabled={!(selectedPreset || condCustom.trim()) || savingCond}>
-                  {savingCond
-                    ? <ActivityIndicator size="small" color="#fff" />
-                    : <Text style={D.condConfirmBtnTxt}>✅ Add Condition</Text>}
-                </TouchableOpacity>
+              {/* Divider */}
+              <View style={D.condDivider}>
+                <View style={D.condDividerLine} />
+                <Text style={D.condDividerTxt}>or</Text>
+                <View style={D.condDividerLine} />
               </View>
 
-              <View style={{ height: 20 }} />
+              {/* Custom condition */}
+              <Text style={D.condSectionLabel}>CUSTOM CONDITION</Text>
+              <TextInput
+                style={[D.condFieldInput, condCustom.trim() && { borderColor: '#2563eb' }]}
+                value={condCustom}
+                onChangeText={v => { setCondCustom(v); setSelectedPreset(null); }}
+                placeholder="Type condition name..."
+                placeholderTextColor="#9ca3af"
+              />
+
+              {/* Optional details */}
+              <Text style={[D.condSectionLabel, { marginTop: 18 }]}>OPTIONAL DETAILS</Text>
+              <TextInput
+                style={D.condFieldInput}
+                value={condDiagDate}
+                onChangeText={setCondDiagDate}
+                placeholder="Diagnosis date  (e.g. 2022-03)"
+                placeholderTextColor="#9ca3af"
+              />
+              <TextInput
+                style={[D.condFieldInput, { marginTop: 10, height: 90, textAlignVertical: 'top', paddingTop: 12 }]}
+                value={condNotes}
+                onChangeText={setCondNotes}
+                placeholder="Clinical notes — severity, treatment status..."
+                placeholderTextColor="#9ca3af"
+                multiline
+              />
+
+              {/* Selected banner */}
+              {(selectedPreset || condCustom.trim()) && (
+                <View style={D.condSelectedBanner}>
+                  <Text style={D.condSelectedBannerCheck}>✓</Text>
+                  <View style={{ flex: 1 }}>
+                    <Text style={D.condSelectedBannerName}>
+                      {selectedPreset || condCustom.trim()} selected
+                    </Text>
+                    <Text style={D.condSelectedBannerSub}>
+                      Will be used to personalise the AI care plan
+                    </Text>
+                  </View>
+                </View>
+              )}
+
+              <View style={{ height: 12 }} />
             </ScrollView>
+
+            {/* Buttons — pinned at bottom, outside ScrollView */}
+            <View style={D.condModalActions}>
+              <TouchableOpacity
+                style={D.condCancelBtn}
+                onPress={() => setCondModalOpen(false)}
+                disabled={savingCond}
+              >
+                <Text style={D.condCancelBtnTxt}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[
+                  D.condConfirmBtn,
+                  !(selectedPreset || condCustom.trim()) && { opacity: 0.45 },
+                ]}
+                onPress={handleSaveCondition}
+                disabled={!(selectedPreset || condCustom.trim()) || savingCond}
+              >
+                {savingCond
+                  ? <ActivityIndicator size="small" color="#fff" />
+                  : <Text style={D.condConfirmBtnTxt}>Add condition</Text>}
+              </TouchableOpacity>
+            </View>
+
           </View>
         </View>
       </Modal>
@@ -1000,7 +1081,6 @@ const D = StyleSheet.create({
   infoLbl:  { fontSize:11, color:'#95a5a6', marginBottom:4 },
   infoVal:  { fontSize:16, fontWeight:'800', color:'#2c3e50' },
 
-  // Condition summary in overview
   condSummaryBox:   { borderTopWidth:1, borderTopColor:'#ecf0f1', paddingTop:12, marginTop:4 },
   condSummaryTitle: { fontSize:13, fontWeight:'700', color:'#2c3e50', marginBottom:8 },
   condChipsRow:     { flexDirection:'row', flexWrap:'wrap', gap:8 },
@@ -1013,7 +1093,6 @@ const D = StyleSheet.create({
   noCondBannerTitle: { fontSize:13, fontWeight:'700', color:'#d68910' },
   noCondBannerSub:   { fontSize:11, color:'#e67e22', marginTop:2 },
 
-  // Conditions tab
   condTabHeader:   { flexDirection:'row', justifyContent:'space-between', alignItems:'center', marginBottom:12 },
   condTabTitle:    { fontSize:18, fontWeight:'800', color:'#2c3e50' },
   condTabSub:      { fontSize:12, color:'#7f8c8d', marginTop:2 },
@@ -1041,10 +1120,31 @@ const D = StyleSheet.create({
   condRemoveBtnTxt:{ fontSize:11, color:'#c0392b', fontWeight:'600' },
   condCardNotes:   { fontSize:12, color:'#7f8c8d', marginTop:10, paddingTop:10, borderTopWidth:1, borderTopColor:'#f4f6f8', lineHeight:18 },
 
-  addMoreCondBtn:   { borderWidth:1.5, borderColor:'#3498db', borderRadius:12, paddingVertical:14, alignItems:'center', borderStyle:'dashed' as any, marginTop:4 },
-  addMoreCondBtnTxt:{ color:'#3498db', fontWeight:'700', fontSize:14 },
+  // ── Redesigned "Add Another Condition" button ──────────────────────────────
+  addMoreCondBtn: {
+    backgroundColor:'#fff',
+    borderRadius:16,
+    borderWidth:1.5,
+    borderColor:'#2d7dd2',
+    paddingVertical:16,
+    paddingHorizontal:20,
+    flexDirection:'row',
+    alignItems:'center',
+    justifyContent:'center',
+    marginTop:8,
+    gap:10,
+    shadowColor:'#2d7dd2',
+    shadowOpacity:0.08,
+    shadowRadius:8,
+    elevation:2,
+  },
+  addMoreCondIcon: {
+    width:28, height:28, borderRadius:14,
+    backgroundColor:'#eef5ff',
+    justifyContent:'center', alignItems:'center',
+  },
+  addMoreCondBtnTxt:{ color:'#2d7dd2', fontWeight:'700', fontSize:15 },
 
-  // Risk
   riskBanner:       { flexDirection:'row', alignItems:'flex-start', borderRadius:12, borderWidth:1, padding:12, marginBottom:14 },
   riskBannerLevel:  { fontSize:12, fontWeight:'700', marginBottom:3 },
   riskBannerMsg:    { fontSize:12, color:'#2c3e50', lineHeight:17 },
@@ -1076,7 +1176,6 @@ const D = StyleSheet.create({
   riskSev:   { fontSize:12, fontWeight:'700', marginBottom:5 },
   riskMsg:   { fontSize:13, color:'#2c3e50', lineHeight:19 },
 
-  // Chat
   chatHeader:   { flexDirection:'row', alignItems:'center', backgroundColor:'#fff', borderRadius:14, padding:14, marginBottom:10, borderWidth:1, borderColor:'#ecf0f1', gap:12 },
   chatAv:       { width:44, height:44, borderRadius:22, backgroundColor:'#27ae60', justifyContent:'center', alignItems:'center' },
   chatAvTxt:    { color:'#fff', fontWeight:'800', fontSize:18 },
@@ -1099,35 +1198,117 @@ const D = StyleSheet.create({
   emptyTitle:{ fontSize:16, fontWeight:'700', color:'#2c3e50', marginTop:6 },
   emptySub:  { fontSize:13, color:'#95a5a6', textAlign:'center', paddingHorizontal:30, marginTop:6 },
 
-  // Condition modal
-  modalOverlay:    { flex:1, backgroundColor:'rgba(0,0,0,0.5)', justifyContent:'flex-end' },
-  condModalBox:    { backgroundColor:'#fff', borderTopLeftRadius:24, borderTopRightRadius:24, padding:20, maxHeight:'90%' },
-  condModalHeader: { flexDirection:'row', justifyContent:'space-between', alignItems:'center', marginBottom:16 },
-  condModalTitle:  { fontSize:18, fontWeight:'800', color:'#2c3e50' },
+  // ── Modal shell ────────────────────────────────────────────────────────────
+  modalOverlay: { flex:1, backgroundColor:'#fff', justifyContent:'flex-start' },
+  condModalBox: {
+    flex:1,
+    backgroundColor:'#fff',
+    paddingHorizontal:20,
+    paddingTop:52,
+    paddingBottom:0,
+  },
+  modalHandle:      { width:40, height:4, borderRadius:2, backgroundColor:'#dee2e6', alignSelf:'center', marginBottom:18, display:'none' },
+  condModalHeader:  { flexDirection:'row', justifyContent:'space-between', alignItems:'flex-start', marginBottom:20 },
+  condModalTitle:   { fontSize:22, fontWeight:'800', color:'#1a1d23', letterSpacing:-0.3 },
+  condModalSubtitle:{ fontSize:14, color:'#8a93a2', marginTop:4 },
+  modalCloseBtn:    { width:36, height:36, borderRadius:18, backgroundColor:'#f0f2f5', justifyContent:'center', alignItems:'center', marginTop:2 },
+  modalCloseTxt:    { fontSize:14, color:'#5a6275', fontWeight:'700' },
 
-  condSearchBox:   { flexDirection:'row', alignItems:'center', backgroundColor:'#f4f6f7', borderRadius:12, paddingHorizontal:12, paddingVertical:10, marginBottom:16, gap:8 },
-  condSearchIcon:  { fontSize:16 },
-  condSearchInput: { flex:1, fontSize:14, color:'#2c3e50' },
+  // ── Search ──────────────────────────────────────────────────────────────────
+  condSearchBox: {
+    flexDirection:'row', alignItems:'center',
+    backgroundColor:'#f5f3ee',
+    borderRadius:14, borderWidth:0,
+    paddingHorizontal:14, paddingVertical:13,
+    marginBottom:16, gap:8,
+  },
+  condSearchIcon:  { fontSize:15, color:'#8a93a2' },
+  condSearchInput: { flex:1, fontSize:15, color:'#1a1d23', fontWeight:'400' },
 
-  condSectionLabel:{ fontSize:12, fontWeight:'700', color:'#7f8c8d', textTransform:'uppercase', letterSpacing:0.5, marginBottom:10, marginTop:8 },
+  // ── Category pills ──────────────────────────────────────────────────────────
+  categoryPillsScroll:   { flexGrow:0, marginBottom:8 },
+  categoryPillsContent:  { paddingBottom:10, gap:8, flexDirection:'row' },
+  categoryPill:          {
+    paddingHorizontal:16, paddingVertical:8,
+    borderRadius:24, borderWidth:1.5, borderColor:'#d0d5dd',
+    backgroundColor:'#fff',
+  },
+  categoryPillActive:    { backgroundColor:'#2563eb', borderColor:'#2563eb' },
+  categoryPillTxt:       { fontSize:13, fontWeight:'600', color:'#374151' },
+  categoryPillTxtActive: { color:'#fff' },
 
-  condPresetGrid:  { flexDirection:'row', flexWrap:'wrap', gap:8, marginBottom:8 },
-  condPresetItem:  { flexDirection:'row', alignItems:'center', paddingHorizontal:12, paddingVertical:8, borderRadius:20, borderWidth:1.5, backgroundColor:'#f8f9fa', gap:6 },
-  condPresetIcon:  { fontSize:16 },
-  condPresetTxt:   { fontSize:13, color:'#2c3e50', fontWeight:'500' },
-  condPresetCheck: { fontSize:14, fontWeight:'800', marginLeft:2 },
+  // ── Section label ───────────────────────────────────────────────────────────
+  condSectionLabel: {
+    fontSize:11, fontWeight:'700', color:'#8a93a2',
+    letterSpacing:0.8, marginBottom:10, marginTop:4,
+  },
 
-  condSelectedPreview:{ backgroundColor:'#eaf4fb', borderRadius:12, padding:12, marginTop:14, borderWidth:1, borderColor:'#aed6f1', flexDirection:'row', alignItems:'center', gap:10 },
-  condSelectedLabel:  { fontSize:12, color:'#2980b9', fontWeight:'600' },
-  condSelectedName:   { fontSize:15, fontWeight:'700', color:'#1a5276', flex:1 },
+  // ── Condition list ──────────────────────────────────────────────────────────
+  condListContainer:   { marginBottom:8 },
+  condListItem:        {
+    flexDirection:'row', alignItems:'center',
+    paddingHorizontal:16, paddingVertical:16,
+    backgroundColor:'#fff',
+    borderRadius:14, borderWidth:1, borderColor:'#e5e7eb',
+    marginBottom:8,
+  },
+  condListItemSelected:{ backgroundColor:'#eff6ff', borderColor:'#2563eb', borderWidth:1.5 },
+  condListItemBorder:  {},  // no longer needed — each card is separate
+  condListIconWrap:    { width:44, height:44, borderRadius:12, justifyContent:'center', alignItems:'center' },
+  condListItemName:    { fontSize:16, fontWeight:'700', color:'#111827', marginBottom:2 },
+  condListItemCat:     { fontSize:13, fontWeight:'500' },
+  condListCheck:       { width:26, height:26, borderRadius:13, justifyContent:'center', alignItems:'center' },
+  condListCheckEmpty:  { width:26, height:26, borderRadius:13, borderWidth:1.5, borderColor:'#d1d5db' },
 
-  condModalActions:{ flexDirection:'row', gap:12, marginTop:20 },
-  condCancelBtn:   { flex:1, borderWidth:1, borderColor:'#d5d8dc', borderRadius:12, paddingVertical:14, alignItems:'center' },
-  condCancelBtnTxt:{ fontSize:14, fontWeight:'600', color:'#7f8c8d' },
-  condConfirmBtn:  { flex:2, backgroundColor:'#3498db', borderRadius:12, paddingVertical:14, alignItems:'center' },
-  condConfirmBtnTxt:{ fontSize:14, fontWeight:'700', color:'#fff' },
+  // ── No results ──────────────────────────────────────────────────────────────
+  condNoResults:    { alignItems:'center', paddingVertical:32 },
+  condNoResultsTxt: { fontSize:15, fontWeight:'700', color:'#2c3e50', marginBottom:4 },
+  condNoResultsSub: { fontSize:13, color:'#8a93a2' },
 
-  // View Full History button
+  // ── Divider ─────────────────────────────────────────────────────────────────
+  condDivider:     { flexDirection:'row', alignItems:'center', marginVertical:20, gap:10 },
+  condDividerLine: { flex:1, height:1, backgroundColor:'#e8ecf0' },
+  condDividerTxt:  { fontSize:12, color:'#adb5bd', fontWeight:'600' },
+
+  // ── Custom / optional fields ────────────────────────────────────────────────
+  condFieldInput: {
+    backgroundColor:'#fff',
+    borderRadius:12, borderWidth:1, borderColor:'#d1d5db',
+    paddingHorizontal:16, paddingVertical:14,
+    fontSize:15, color:'#111827',
+  },
+
+  // ── Selected banner ─────────────────────────────────────────────────────────
+  condSelectedBanner:      {
+    flexDirection:'row', alignItems:'flex-start',
+    backgroundColor:'#eff6ff', borderRadius:12,
+    borderWidth:1, borderColor:'#bfdbfe',
+    padding:14, marginTop:16, gap:10,
+  },
+  condSelectedBannerCheck: { fontSize:16, color:'#2563eb', fontWeight:'800', marginTop:1 },
+  condSelectedBannerName:  { fontSize:14, fontWeight:'700', color:'#1d4ed8' },
+  condSelectedBannerSub:   { fontSize:12, color:'#3b82f6', marginTop:2, lineHeight:17 },
+
+  // ── Action buttons — pinned at bottom ──────────────────────────────────────
+  condModalActions:  {
+    flexDirection:'row', gap:12,
+    paddingTop:12, paddingBottom:32,
+    paddingHorizontal:0,
+    backgroundColor:'#fff',
+    borderTopWidth:1, borderTopColor:'#f0f2f5',
+  },
+  condCancelBtn:     {
+    flex:1, borderWidth:1, borderColor:'#e5e7eb',
+    borderRadius:14, paddingVertical:17, alignItems:'center',
+    backgroundColor:'#fafaf9',
+  },
+  condCancelBtnTxt:  { fontSize:16, fontWeight:'600', color:'#374151' },
+  condConfirmBtn:    {
+    flex:2.2, backgroundColor:'#2563eb',
+    borderRadius:14, paddingVertical:17, alignItems:'center',
+  },
+  condConfirmBtnTxt: { fontSize:16, fontWeight:'700', color:'#fff' },
+
   historyBtn:    { borderWidth:1.5, borderColor:'#3498db', borderRadius:12, paddingVertical:13, alignItems:'center', marginTop:16, backgroundColor:'#eaf4fb' },
   historyBtnTxt: { color:'#3498db', fontWeight:'700', fontSize:13, letterSpacing:0.5 },
 });
