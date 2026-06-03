@@ -1,10 +1,32 @@
+# IDE
 .idea/
+
+# Environment variables
 .env
-nnode_modules/
+
+# Dependencies
+node_modules/
+medimind-backend/node_modules/
+
+# Python
 __pycache__/
 *.pyc
-.DS_Store
+
+# Build outputs
+android/
+dist/
+.expo/
+
+# ML model
+medimind-backend/careplan_model/
+
+# Database files
 *.frm
 *.ibd
 *.opt
 db.opt
+
+# OS files
+.DS_Store
+.DS_Store?
+Thumbs.db
