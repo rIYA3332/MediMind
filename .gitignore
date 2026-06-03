@@ -1,0 +1,10 @@
+.idea/
+.env
+nnode_modules/
+__pycache__/
+*.pyc
+.DS_Store
+*.frm
+*.ibd
+*.opt
+db.opt
